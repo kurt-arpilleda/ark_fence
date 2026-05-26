@@ -31,6 +31,7 @@ import kotlinx.coroutines.launch
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
+import kotlin.coroutines.resume
 
 class GeofenceService : Service() {
 
@@ -91,6 +92,9 @@ class GeofenceService : Service() {
             "GeofenceService::WakeLock"
         ).apply {
             setReferenceCounted(false)
+        }
+        if (wakeLock?.isHeld != true) {
+            wakeLock?.acquire()
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -214,37 +218,44 @@ class GeofenceService : Service() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun performInsert() {
+    private suspend fun performInsert() {
         val batteryPercent = getBatteryPercent()
         val isLocationOn = if (isLocationEnabled()) 1 else 0
+
         val lat = lastLatitude
         val lng = lastLongitude
 
-        if (lat != null && lng != null && NetworkUtils.isNetworkAvailable(this)) {
+        if (lat != null && lng != null) {
             sendToServer(lat.toString(), lng.toString(), batteryPercent, isLocationOn)
-        } else if (lat == null || lng == null) {
-            try {
-                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            return
+        }
+
+        try {
+            val lastKnown = fusedLocationClient.lastLocation
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                lastKnown.addOnSuccessListener { location ->
                     if (location != null) {
                         lastLatitude = location.latitude
                         lastLongitude = location.longitude
-                        if (NetworkUtils.isNetworkAvailable(this)) {
-                            sendToServer(
-                                location.latitude.toString(),
-                                location.longitude.toString(),
-                                batteryPercent,
-                                isLocationOn
-                            )
-                        }
+                        sendToServer(
+                            location.latitude.toString(),
+                            location.longitude.toString(),
+                            batteryPercent,
+                            isLocationOn
+                        )
                     } else {
-                        if (NetworkUtils.isNetworkAvailable(this)) {
-                            sendToServer("0", "0", batteryPercent, isLocationOn)
-                        }
+                        sendToServer("0", "0", batteryPercent, isLocationOn)
                     }
+                    if (continuation.isActive) continuation.resume(Unit)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Last location fetch failed", e)
+                lastKnown.addOnFailureListener {
+                    sendToServer("0", "0", batteryPercent, isLocationOn)
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Last location fetch failed", e)
+            sendToServer("0", "0", batteryPercent, isLocationOn)
         }
     }
 
