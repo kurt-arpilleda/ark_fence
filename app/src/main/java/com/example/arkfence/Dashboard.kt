@@ -1,8 +1,11 @@
 package com.example.arkfence
 
 import android.annotation.SuppressLint
-import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -65,11 +68,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.compose.rememberAsyncImagePainter
-import coil.decode.GifDecoder
-import coil.decode.ImageDecoderDecoder
 import com.example.arkfence.ui.theme.ArkfenceTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -84,6 +84,9 @@ import java.net.URL
 
 class Dashboard : ComponentActivity() {
 
+    private lateinit var appUpdateService: AppUpdateService
+    private var connectivityReceiver: ConnectivityReceiver? = null
+
     @SuppressLint("HardwareIds")
     private fun retrieveDeviceId(): String {
         return try {
@@ -97,9 +100,56 @@ class Dashboard : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        appUpdateService = AppUpdateService(this)
         setContent {
             ArkfenceTheme {
                 DashboardContent(deviceId = retrieveDeviceId())
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        registerReceiver()
+        checkForUpdates()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        connectivityReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: IllegalArgumentException) {
+                // Receiver not registered
+            }
+        }
+    }
+
+    private fun registerReceiver() {
+        connectivityReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: IllegalArgumentException) {
+                // Not registered
+            }
+        }
+        connectivityReceiver = ConnectivityReceiver {
+            checkForUpdates()
+        }
+        val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+        registerReceiver(connectivityReceiver, filter)
+    }
+
+    private fun checkForUpdates() {
+        if (NetworkUtils.isNetworkAvailable(this)) {
+            appUpdateService.checkForAppUpdate()
+        }
+    }
+
+    inner class ConnectivityReceiver(private val onNetworkAvailable: () -> Unit) : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (NetworkUtils.isNetworkAvailable(context)) {
+                onNetworkAvailable()
             }
         }
     }
@@ -146,16 +196,6 @@ class Dashboard : ComponentActivity() {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-
-        val imageLoader = ImageLoader.Builder(context)
-            .components {
-                if (Build.VERSION.SDK_INT >= 28) {
-                    add(ImageDecoderDecoder.Factory())
-                } else {
-                    add(GifDecoder.Factory())
-                }
-            }
-            .build()
 
         var currentLanguage by remember {
             mutableStateOf(prefs.getString("languageFlag", "en") ?: "en")
@@ -319,7 +359,7 @@ class Dashboard : ComponentActivity() {
                                 modifier = Modifier.clickable { updateLanguagePreference("en") }
                             ) {
                                 Image(
-                                    painter = rememberAsyncImagePainter(R.drawable.americanflag, imageLoader = imageLoader),
+                                    painter = rememberAsyncImagePainter(R.drawable.americanflag),
                                     contentDescription = "English",
                                     modifier = Modifier.size(40.dp)
                                 )
@@ -341,7 +381,7 @@ class Dashboard : ComponentActivity() {
                                 modifier = Modifier.clickable { updateLanguagePreference("ja") }
                             ) {
                                 Image(
-                                    painter = rememberAsyncImagePainter(R.drawable.japaneseflag, imageLoader = imageLoader),
+                                    painter = rememberAsyncImagePainter(R.drawable.japaneseflag),
                                     contentDescription = "Japanese",
                                     modifier = Modifier.size(40.dp)
                                 )
@@ -424,7 +464,7 @@ class Dashboard : ComponentActivity() {
                                 contentAlignment = Alignment.Center
                             ) {
                                 IconButton(
-                                    onClick = { (context as? Activity)?.finishAffinity() },
+                                    onClick = { (context as? ComponentActivity)?.finishAffinity() },
                                     modifier = Modifier.size(28.dp)
                                 ) {
                                     Icon(
