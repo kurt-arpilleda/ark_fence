@@ -479,13 +479,12 @@ class Dashboard : ComponentActivity() {
 
                         TopAppBar(
                             title = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center,
-                                    modifier = Modifier.fillMaxWidth()
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = "ArkFence",
+                                        text = "ARK FENCE",
                                         style = MaterialTheme.typography.titleMedium.copy(
                                             fontSize = 27.sp,
                                             fontWeight = FontWeight.Bold,
