@@ -1,5 +1,7 @@
 package com.example.arkfence
 
+import android.Manifest
+import android.R
 import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.Notification
@@ -23,6 +25,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import androidx.annotation.RequiresPermission
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -184,6 +187,7 @@ class GeofenceService : Service() {
         return earthRadius * c
     }
 
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun checkGeofence(lat: Double, lng: Double) {
         val center = geofenceCenter ?: return
         val distance = calculateDistance(lat, lng, center.centerLatitude, center.centerLongitude)
@@ -198,11 +202,13 @@ class GeofenceService : Service() {
         }
     }
 
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun triggerAlarm() {
         startAlarmSound()
         showAlertNotification()
     }
 
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun showAlertNotification() {
         val alertActivityIntent = Intent(this, AlertText::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -225,7 +231,7 @@ class GeofenceService : Service() {
         val notification = notificationBuilder
             .setContentTitle("⚠️ Outside Premises")
             .setContentText("This phone is outside the premises of Arktech please bring it back immediately")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setSmallIcon(R.drawable.ic_dialog_alert)
             .setOngoing(true)
             .setAutoCancel(false)
             .setFullScreenIntent(fullScreenPendingIntent, true)
@@ -376,6 +382,7 @@ class GeofenceService : Service() {
     }
 
     private val locationCallback = object : LocationCallback() {
+        @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
             lastLatitude = location.latitude
