@@ -47,3 +47,16 @@ data class RingtoneInfo(
     val name: String,
     val uri: String
 )
+
+data class GeofenceCenter(
+    val centerId: Int,
+    val centerLatitude: Double,
+    val centerLongitude: Double,
+    val radiusMeters: Double
+)
+
+data class GeofenceRadiusResponse(
+    val success: Boolean,
+    val center: GeofenceCenter?,
+    val error: String?
+)

@@ -30,4 +30,7 @@ interface ApiService {
         @Field("batteryPercent") batteryPercent: Int,
         @Field("isLocationOn") isLocationOn: Int
     ): Call<BasicResponse>
+
+    @GET("V4/Others/Kurt/ArkFenceAPI/kurt_fetchRadius.php")
+    fun getGeofenceRadius(): Call<GeofenceRadiusResponse>
 }
