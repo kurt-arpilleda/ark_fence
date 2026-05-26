@@ -1,6 +1,5 @@
 package com.example.arkfence
 
-// Update APK
 data class AppUpdateResponse(
     val version: Int,
     val artifactType: ArtifactType,
@@ -10,10 +9,12 @@ data class AppUpdateResponse(
     val elementType: String,
     val minSdkVersionForDexing: Int
 )
+
 data class ArtifactType(
     val type: String,
     val kind: String
 )
+
 data class Element(
     val type: String,
     val filters: List<Any>,
@@ -22,13 +23,7 @@ data class Element(
     val versionName: String,
     val outputFile: String
 )
-// Update APK end
-data class NotificationStatusResponse(
-    val success: Boolean,
-    val shouldRing: Boolean?,
-    val error: String?,
-    val type: String? = null
-)
+
 data class ProfileResponse(
     val success: Boolean,
     val employee: EmployeeData?,
@@ -41,4 +36,9 @@ data class EmployeeData(
     val idNumber: String,
     val picture: String,
     val languageFlag: String
+)
+
+data class BasicResponse(
+    val success: Boolean,
+    val error: String?
 )

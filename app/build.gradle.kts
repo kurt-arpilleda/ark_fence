@@ -72,4 +72,5 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation ("androidx.navigation:navigation-compose:2.9.8")
     implementation ("io.coil-kt:coil-gif:2.7.0")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

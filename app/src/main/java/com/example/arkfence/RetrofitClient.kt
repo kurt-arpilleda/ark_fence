@@ -20,7 +20,6 @@ object RetrofitClient {
     private const val READ_WRITE_TIMEOUT_SECONDS = 10L
 
     private val currentBaseUrl = AtomicReference<String>(PRIMARY_URL)
-
     private val executor = Executors.newCachedThreadPool()
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
@@ -38,9 +37,7 @@ object RetrofitClient {
         .build()
 
     val instance: ApiService by lazy {
-        val gson = GsonBuilder()
-            .setLenient()
-            .create()
+        val gson = GsonBuilder().setLenient().create()
         createRetrofitInstance(currentBaseUrl.get(), gson)
     }
 
@@ -56,7 +53,6 @@ object RetrofitClient {
     fun updateWorkingUrl() {
         executor.submit {
             val completionService = ExecutorCompletionService<Pair<String, Boolean>>(executor)
-
             val urls = listOf(PRIMARY_URL, FALLBACK_URL)
             urls.forEach { url ->
                 completionService.submit(Callable {
@@ -64,7 +60,6 @@ object RetrofitClient {
                     url to reachable
                 })
             }
-
             repeat(urls.size) {
                 val future = completionService.take()
                 val (url, reachable) = future.get()
@@ -75,6 +70,7 @@ object RetrofitClient {
             }
         }
     }
+
     private fun isUrlReachable(url: String): Boolean {
         return try {
             val host = url.substringAfter("://").substringBefore("/")
@@ -97,7 +93,6 @@ object RetrofitClient {
         override fun intercept(chain: Interceptor.Chain): Response {
             val originalRequest = chain.request()
             val originalUrl = originalRequest.url
-
             val currentUrl = currentBaseUrl.get()
             val urls = if (currentUrl == PRIMARY_URL) {
                 listOf(PRIMARY_URL, FALLBACK_URL)
@@ -114,11 +109,7 @@ object RetrofitClient {
                             .scheme(baseUrl.substringBefore("://"))
                             .host(baseUrl.substringAfter("://").substringBefore("/"))
                             .build()
-
-                        val newRequest = originalRequest.newBuilder()
-                            .url(newUrl)
-                            .build()
-
+                        val newRequest = originalRequest.newBuilder().url(newUrl).build()
                         val response = chain.proceed(newRequest)
                         if (response.isSuccessful) {
                             currentBaseUrl.set(baseUrl)
@@ -127,12 +118,8 @@ object RetrofitClient {
                         response.close()
                     } catch (e: IOException) {
                         lastException = e
-                        if (attempt < MAX_RETRIES) {
-                            Thread.sleep(RETRY_DELAY_MS)
-                        }
-                        if (attempt == MAX_RETRIES) {
-                            handleConnectionFailure()
-                        }
+                        if (attempt < MAX_RETRIES) Thread.sleep(RETRY_DELAY_MS)
+                        if (attempt == MAX_RETRIES) handleConnectionFailure()
                     }
                 }
             }
