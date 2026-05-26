@@ -42,3 +42,8 @@ data class BasicResponse(
     val success: Boolean,
     val error: String?
 )
+
+data class RingtoneInfo(
+    val name: String,
+    val uri: String
+)

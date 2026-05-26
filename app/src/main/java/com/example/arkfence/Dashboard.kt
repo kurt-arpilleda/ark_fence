@@ -2,21 +2,32 @@ package com.example.arkfence
 
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.database.Cursor
+import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,13 +40,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,9 +66,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
@@ -60,14 +85,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.edit
 import coil.compose.AsyncImage
 import coil.compose.rememberAsyncImagePainter
 import com.example.arkfence.ui.theme.ArkfenceTheme
@@ -79,13 +109,183 @@ import kotlinx.coroutines.withTimeout
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.roundToInt
 
 class Dashboard : ComponentActivity() {
 
     private lateinit var appUpdateService: AppUpdateService
     private var connectivityReceiver: ConnectivityReceiver? = null
+
+    companion object {
+        private const val RINGTONE_PREF_KEY = "selected_ringtone_uri"
+        private const val RINGTONE_NAME_PREF_KEY = "selected_ringtone_name"
+    }
+
+    private fun saveSelectedRingtone(uri: String, name: String) {
+        getSharedPreferences("AppPrefs", Context.MODE_PRIVATE).edit {
+            putString(RINGTONE_PREF_KEY, uri)
+            putString(RINGTONE_NAME_PREF_KEY, name)
+        }
+    }
+
+    private fun getSavedRingtoneUri(): String? {
+        return getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+            .getString(RINGTONE_PREF_KEY, null)
+    }
+
+    private fun getSavedRingtoneName(): String? {
+        return getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+            .getString(RINGTONE_NAME_PREF_KEY, null)
+    }
+
+    private val selectAudioLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { audioUri ->
+            handleSelectedAudio(audioUri)
+        }
+    }
+
+    private fun handleSelectedAudio(uri: Uri) {
+        try {
+            val inputStream: InputStream? = contentResolver.openInputStream(uri)
+            inputStream?.let { stream ->
+                val originalName = getFileNameFromUri(uri) ?: "custom_ringtone"
+                val fileName = if (originalName.contains('.')) originalName else "$originalName.mp3"
+
+                val ringtonesDir = File(filesDir, "ringtones")
+                if (!ringtonesDir.exists()) ringtonesDir.mkdirs()
+
+                val file = File(ringtonesDir, fileName)
+                val outputStream = FileOutputStream(file)
+                stream.copyTo(outputStream)
+                stream.close()
+                outputStream.close()
+
+                addToMediaStore(file, true)
+                sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)))
+                Toast.makeText(this, "Alarm ringtone added successfully", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("Dashboard", "Error handling selected audio", e)
+            Toast.makeText(this, "Error adding ringtone: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun getFileNameFromUri(uri: Uri): String? {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    result = it.getString(it.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME))
+                }
+            }
+        }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/')
+            if (cut != -1) result = result?.substring(cut!! + 1)
+        }
+        return result
+    }
+
+    private fun addToMediaStore(file: File, isAlarm: Boolean = false) {
+        val values = ContentValues().apply {
+            put(MediaStore.Audio.Media.DATA, file.absolutePath)
+            put(MediaStore.Audio.Media.TITLE, file.nameWithoutExtension)
+            put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
+            put(MediaStore.Audio.Media.IS_ALARM, isAlarm)
+            put(MediaStore.Audio.Media.IS_RINGTONE, false)
+            put(MediaStore.Audio.Media.IS_NOTIFICATION, false)
+            put(MediaStore.Audio.Media.IS_MUSIC, false)
+        }
+        try {
+            val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isAlarm) {
+                val alarmValues = ContentValues().apply {
+                    put(MediaStore.Audio.Media.IS_ALARM, true)
+                }
+                uri?.let { contentResolver.update(it, alarmValues, null, null) }
+            }
+        } catch (e: Exception) {
+            Log.e("Dashboard", "Error adding to media store", e)
+        }
+    }
+
+    fun getCustomRingtones(context: Context): List<RingtoneInfo> {
+        val customRingtones = mutableListOf<RingtoneInfo>()
+        val ringtonesDir = File(context.filesDir, "ringtones")
+        if (ringtonesDir.exists()) {
+            ringtonesDir.listFiles()?.forEach { file ->
+                if (file.isFile && (file.extension.equals("mp3", ignoreCase = true) ||
+                            file.extension.equals("wav", ignoreCase = true) ||
+                            file.extension.equals("m4a", ignoreCase = true))) {
+                    val uri = Uri.fromFile(file).toString()
+                    customRingtones.add(RingtoneInfo(file.nameWithoutExtension, uri))
+                }
+            }
+        }
+        return customRingtones
+    }
+
+    private fun getRawResourceRingtones(context: Context): List<RingtoneInfo> {
+        val ringtones = mutableListOf<RingtoneInfo>()
+        val rawRingtones = mapOf(
+            R.raw.office to "Office Ring",
+            R.raw.japan_eas to "Japan EAS",
+            R.raw.usa_eas_alarm to "USA EAS",
+            R.raw.theftalarm to "Theft Alarm",
+        )
+        rawRingtones.forEach { (resId, name) ->
+            val uri = Uri.parse("android.resource://${context.packageName}/$resId").toString()
+            ringtones.add(RingtoneInfo(name, uri))
+        }
+        return ringtones
+    }
+
+    fun getRingtones(context: Context): List<RingtoneInfo> {
+        val ringtones = mutableListOf<RingtoneInfo>()
+        ringtones.addAll(getCustomRingtones(context))
+        ringtones.addAll(getRawResourceRingtones(context))
+        val ringtoneManager = RingtoneManager(context)
+        ringtoneManager.setType(RingtoneManager.TYPE_ALARM)
+        val cursor = ringtoneManager.cursor
+        while (cursor.moveToNext()) {
+            val title = cursor.getString(RingtoneManager.TITLE_COLUMN_INDEX)
+            val uri = ringtoneManager.getRingtoneUri(cursor.position).toString()
+            ringtones.add(RingtoneInfo(title, uri))
+        }
+        cursor.close()
+        return ringtones
+    }
+
+    fun getRingtoneName(context: Context, uri: String): String {
+        return try {
+            if (uri.isEmpty()) return "Default"
+            val ringtone = RingtoneManager.getRingtone(context, Uri.parse(uri))
+            ringtone.getTitle(context) ?: "Unknown"
+        } catch (e: Exception) {
+            "Default"
+        }
+    }
+
+    private fun isAlarmRingtone(context: Context, uri: Uri): Boolean {
+        val projection = arrayOf(MediaStore.Audio.Media.IS_ALARM)
+        val cursor = context.contentResolver.query(uri, projection, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val isAlarm = it.getInt(it.getColumnIndexOrThrow(MediaStore.Audio.Media.IS_ALARM))
+                return isAlarm == 1
+            }
+        }
+        return false
+    }
 
     @SuppressLint("HardwareIds")
     private fun retrieveDeviceId(): String {
@@ -120,7 +320,6 @@ class Dashboard : ComponentActivity() {
             try {
                 unregisterReceiver(it)
             } catch (e: IllegalArgumentException) {
-                // Receiver not registered
             }
         }
     }
@@ -130,7 +329,6 @@ class Dashboard : ComponentActivity() {
             try {
                 unregisterReceiver(it)
             } catch (e: IllegalArgumentException) {
-                // Not registered
             }
         }
         connectivityReceiver = ConnectivityReceiver {
@@ -506,7 +704,481 @@ class Dashboard : ComponentActivity() {
                         .padding(paddingValues),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        AlarmVolumeView(currentLanguage = currentLanguage)
+                    }
                 }
+            }
+        }
+    }
+
+    @Composable
+    fun AlarmVolumeView(currentLanguage: String) {
+        val context = LocalContext.current
+        val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+        var currentVolume by remember {
+            mutableStateOf(audioManager.getStreamVolume(AudioManager.STREAM_ALARM))
+        }
+        val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM) }
+
+        var showRingtoneDialog by remember { mutableStateOf(false) }
+        var currentRingtone by remember {
+            mutableStateOf(
+                getSavedRingtoneUri()
+                    ?: RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_ALARM)?.toString() ?: ""
+            )
+        }
+        var currentRingtoneName by remember {
+            mutableStateOf(
+                getSavedRingtoneName() ?: getRingtoneName(context, currentRingtone)
+            )
+        }
+
+        fun getTranslatedText(englishText: String, japaneseText: String): String {
+            return if (currentLanguage == "ja") japaneseText else englishText
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Alarm,
+                contentDescription = getTranslatedText("Alarm", "アラーム"),
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = getTranslatedText("Volume", "音量"),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "$currentVolume / $maxVolume",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Medium
+                ),
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            VolumeSlider(
+                volume = currentVolume,
+                maxVolume = maxVolume,
+                currentLanguage = currentLanguage,
+                onVolumeChange = { newVolume ->
+                    currentVolume = newVolume
+                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, newVolume, 0)
+                }
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Text(
+                text = getTranslatedText("Ringtone", "着信音"),
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showRingtoneDialog = true },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = getTranslatedText("Current Ringtone", "現在の着信音"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = currentRingtoneName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = getTranslatedText("Select Ringtone", "着信音を選択"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (showRingtoneDialog) {
+                RingtoneSelectionDialog(
+                    context = context,
+                    currentRingtone = currentRingtone,
+                    currentLanguage = currentLanguage,
+                    onRingtoneSelected = { uri, name ->
+                        currentRingtone = uri
+                        currentRingtoneName = name
+                        saveSelectedRingtone(uri, name)
+                        RingtoneManager.setActualDefaultRingtoneUri(
+                            context,
+                            RingtoneManager.TYPE_ALARM,
+                            Uri.parse(uri)
+                        )
+                        showRingtoneDialog = false
+                    },
+                    onDismiss = { showRingtoneDialog = false }
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun VolumeSlider(
+        volume: Int,
+        maxVolume: Int,
+        currentLanguage: String,
+        onVolumeChange: (Int) -> Unit
+    ) {
+        var sliderPosition by remember { mutableStateOf(volume.toFloat()) }
+
+        LaunchedEffect(volume) {
+            sliderPosition = volume.toFloat()
+        }
+
+        fun getTranslatedText(englishText: String, japaneseText: String): String {
+            return if (currentLanguage == "ja") japaneseText else englishText
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        if (volume > 0) onVolumeChange(volume - 1)
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeDown,
+                        contentDescription = getTranslatedText("Volume Down", "音量を下げる"),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .padding(horizontal = 16.dp)
+                ) {
+                    ModernVolumeSlider(
+                        value = sliderPosition,
+                        onValueChange = {
+                            sliderPosition = it
+                            onVolumeChange(it.roundToInt())
+                        },
+                        valueRange = 0f..maxVolume.toFloat(),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        if (volume < maxVolume) onVolumeChange(volume + 1)
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeUp,
+                        contentDescription = getTranslatedText("Volume Up", "音量を上げる"),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Text(
+                text = "${(volume * 100 / maxVolume)}%",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
+    @Composable
+    fun ModernVolumeSlider(
+        value: Float,
+        onValueChange: (Float) -> Unit,
+        valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+        modifier: Modifier = Modifier
+    ) {
+        var isDragging by remember { mutableStateOf(false) }
+        val trackColor = MaterialTheme.colorScheme.outline
+        val activeTrackColor = MaterialTheme.colorScheme.primary
+        val thumbColor = MaterialTheme.colorScheme.primary
+
+        Canvas(
+            modifier = modifier
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { isDragging = true },
+                        onDragEnd = { isDragging = false }
+                    ) { _, _ -> }
+                }
+                .pointerInput(Unit) {
+                    detectDragGestures { change, _ ->
+                        val newValue = (change.position.x / size.width) * (valueRange.endInclusive - valueRange.start) + valueRange.start
+                        onValueChange(newValue.coerceIn(valueRange))
+                    }
+                }
+        ) {
+            val trackHeight = 8.dp.toPx()
+            val thumbRadius = 12.dp.toPx()
+            val trackY = size.height / 2
+            val normalizedValue = (value - valueRange.start) / (valueRange.endInclusive - valueRange.start)
+            val thumbX = normalizedValue * size.width
+
+            drawLine(
+                color = trackColor,
+                start = Offset(0f, trackY),
+                end = Offset(size.width, trackY),
+                strokeWidth = trackHeight,
+                cap = StrokeCap.Round
+            )
+
+            drawLine(
+                color = activeTrackColor,
+                start = Offset(0f, trackY),
+                end = Offset(thumbX, trackY),
+                strokeWidth = trackHeight,
+                cap = StrokeCap.Round
+            )
+
+            drawCircle(
+                color = thumbColor,
+                radius = if (isDragging) thumbRadius * 1.2f else thumbRadius,
+                center = Offset(thumbX, trackY)
+            )
+        }
+    }
+
+    @Composable
+    fun RingtoneSelectionDialog(
+        context: Context,
+        currentRingtone: String,
+        currentLanguage: String,
+        onRingtoneSelected: (String, String) -> Unit,
+        onDismiss: () -> Unit
+    ) {
+        var allRingtones by remember { mutableStateOf(getRingtones(context)) }
+        val alarmRingtones = remember { allRingtones.filter { isAlarmRingtone(context, Uri.parse(it.uri)) } }
+        val otherRingtones = remember { allRingtones.filterNot { isAlarmRingtone(context, Uri.parse(it.uri)) } }
+        var selectedRingtone by remember { mutableStateOf(currentRingtone) }
+        var selectedRingtoneName by remember { mutableStateOf(getRingtoneName(context, currentRingtone)) }
+        var currentPlayingRingtone by remember { mutableStateOf<Ringtone?>(null) }
+
+        fun refreshRingtones() {
+            allRingtones = getRingtones(context)
+        }
+
+        fun getTranslatedText(englishText: String, japaneseText: String): String {
+            return if (currentLanguage == "ja") japaneseText else englishText
+        }
+
+        fun playRingtone(uri: String) {
+            currentPlayingRingtone?.stop()
+            val ringtoneUri = Uri.parse(uri)
+            val ringtone = RingtoneManager.getRingtone(context, ringtoneUri)
+            ringtone.streamType = AudioManager.STREAM_ALARM
+            ringtone.play()
+            currentPlayingRingtone = ringtone
+        }
+
+        Dialog(onDismissRequest = {
+            currentPlayingRingtone?.stop()
+            onDismiss()
+        }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(700.dp)
+                    .padding(16.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = getTranslatedText("Select Ringtone", "着信音を選択"),
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        IconButton(
+                            onClick = {
+                                selectAudioLauncher.launch("audio/*")
+                                refreshRingtones()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = getTranslatedText("Add Custom Ringtone", "カスタム着信音を追加"),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        if (otherRingtones.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = getTranslatedText("Your sounds", "自分のサウンド"),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(16.dp, 8.dp)
+                                )
+                            }
+                            items(otherRingtones) { ringtone ->
+                                RingtoneItem(
+                                    ringtone = ringtone,
+                                    isSelected = ringtone.uri == selectedRingtone,
+                                    onClick = {
+                                        selectedRingtone = ringtone.uri
+                                        selectedRingtoneName = ringtone.name
+                                        playRingtone(ringtone.uri)
+                                    }
+                                )
+                            }
+                        }
+
+                        item {
+                            Text(
+                                text = getTranslatedText("Alarm Tones", "アラーム音"),
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.padding(16.dp, 8.dp)
+                            )
+                        }
+
+                        items(alarmRingtones) { ringtone ->
+                            RingtoneItem(
+                                ringtone = ringtone,
+                                isSelected = ringtone.uri == selectedRingtone,
+                                onClick = {
+                                    selectedRingtone = ringtone.uri
+                                    selectedRingtoneName = ringtone.name
+                                    playRingtone(ringtone.uri)
+                                }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        TextButton(onClick = {
+                            currentPlayingRingtone?.stop()
+                            onDismiss()
+                        }) {
+                            Text(getTranslatedText("Cancel", "キャンセル"))
+                        }
+
+                        Button(onClick = {
+                            currentPlayingRingtone?.stop()
+                            onRingtoneSelected(selectedRingtone, selectedRingtoneName)
+                            onDismiss()
+                        }) {
+                            Text(getTranslatedText("Select", "選択"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun RingtoneItem(
+        ringtone: RingtoneInfo,
+        isSelected: Boolean,
+        onClick: () -> Unit
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clickable { onClick() },
+            colors = CardDefaults.cardColors(
+                containerColor = if (isSelected)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
+                    MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = isSelected,
+                    onClick = onClick,
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Text(
+                    text = ringtone.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (isSelected)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurface
+                )
             }
         }
     }
