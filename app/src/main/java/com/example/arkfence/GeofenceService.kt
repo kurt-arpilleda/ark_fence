@@ -205,10 +205,8 @@ class GeofenceService : Service() {
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun triggerAlarm() {
         startAlarmSound()
-        showAlertNotification()
     }
 
-    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun showAlertNotification() {
         val alertActivityIntent = Intent(this, AlertText::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -297,11 +295,6 @@ class GeofenceService : Service() {
     private fun stopAlarm() {
         stopAlarmSound()
         dismissAlertNotification()
-        val stopAlertIntent = Intent(this, AlertText::class.java).apply {
-            action = AlertText.ACTION_DISMISS
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-        startActivity(stopAlertIntent)
     }
 
     private fun createSilentChannel(): String {
