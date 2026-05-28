@@ -33,4 +33,10 @@ interface ApiService {
 
     @GET("V4/Others/Kurt/ArkFenceAPI/kurt_fetchRadius.php")
     fun getGeofenceRadius(): Call<GeofenceRadiusResponse>
+
+    @FormUrlEncoded
+    @POST("V4/Others/Kurt/ArkFenceAPI/kurt_insertGeofenceAlert.php")
+    fun insertGeofenceAlert(
+        @Field("deviceId") deviceId: String
+    ): Call<BasicResponse>
 }

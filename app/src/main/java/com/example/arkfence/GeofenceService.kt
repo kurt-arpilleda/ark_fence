@@ -64,6 +64,7 @@ class GeofenceService : Service() {
     private var geofenceCenter: GeofenceCenter? = null
     private var isOutsideGeofence = false
     private var mediaPlayer: MediaPlayer? = null
+    private var hasSentAlertForCurrentExit = false
 
     companion object {
         private const val TAG = "GeofenceService"
@@ -192,13 +193,29 @@ class GeofenceService : Service() {
 
         if (outside && !isOutsideGeofence) {
             isOutsideGeofence = true
+            hasSentAlertForCurrentExit = false
             triggerAlarm()
+            sendGeofenceAlert()
         } else if (!outside && isOutsideGeofence) {
             isOutsideGeofence = false
+            hasSentAlertForCurrentExit = false
             stopAlarm()
         }
     }
-
+    private fun sendGeofenceAlert() {
+        if (hasSentAlertForCurrentExit) return
+        hasSentAlertForCurrentExit = true
+        RetrofitClient.instance.insertGeofenceAlert(deviceId).enqueue(object : Callback<BasicResponse> {
+            override fun onResponse(call: Call<BasicResponse>, response: Response<BasicResponse>) {
+                if (!response.isSuccessful || response.body()?.success != true) {
+                    hasSentAlertForCurrentExit = false
+                }
+            }
+            override fun onFailure(call: Call<BasicResponse>, t: Throwable) {
+                hasSentAlertForCurrentExit = false
+            }
+        })
+    }
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun triggerAlarm() {
         startAlarmSound()

@@ -60,3 +60,7 @@ data class GeofenceRadiusResponse(
     val center: GeofenceCenter?,
     val error: String?
 )
+data class GeofenceAlertResponse(
+    val success: Boolean,
+    val error: String?
+)
