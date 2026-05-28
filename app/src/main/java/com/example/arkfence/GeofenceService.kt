@@ -56,6 +56,7 @@ class GeofenceService : Service() {
     private lateinit var alarmManager: AlarmManager
     private var alarmPendingIntent: PendingIntent? = null
     private var deviceId: String = "unknown-device"
+    private lateinit var dbManager: DBManager
 
     private var lastLatitude: Double? = null
     private var lastLongitude: Double? = null
@@ -101,6 +102,8 @@ class GeofenceService : Service() {
             "unknown-device"
         }
 
+        dbManager = DBManager(applicationContext)
+
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
@@ -137,20 +140,37 @@ class GeofenceService : Service() {
             override fun onResponse(call: Call<GeofenceRadiusResponse>, response: Response<GeofenceRadiusResponse>) {
                 if (response.isSuccessful && response.body()?.success == true) {
                     val newCenter = response.body()?.center
-                    if (newCenter != null && newCenter != geofenceCenter) {
-                        Log.d(TAG, "Geofence center updated: $newCenter")
-                        geofenceCenter = newCenter
+                    if (newCenter != null) {
+                        dbManager.insertOrUpdateGeofenceCenter(newCenter)
+                        if (newCenter != geofenceCenter) {
+                            Log.d(TAG, "Geofence center updated: $newCenter")
+                            geofenceCenter = newCenter
+                        }
                     }
                 } else {
-                    Log.w(TAG, "Failed to load geofence center")
+                    Log.w(TAG, "Failed to load geofence center from server, trying local DB")
+                    loadGeofenceFromLocalDB()
                 }
                 onComplete?.invoke()
             }
             override fun onFailure(call: Call<GeofenceRadiusResponse>, t: Throwable) {
-                Log.w(TAG, "Geofence fetch failed: ${t.message}")
+                Log.w(TAG, "Geofence fetch failed: ${t.message}, using local DB")
+                loadGeofenceFromLocalDB()
                 onComplete?.invoke()
             }
         })
+    }
+
+    private fun loadGeofenceFromLocalDB() {
+        val localCenter = dbManager.getGeofenceCenter()
+        if (localCenter != null) {
+            if (localCenter != geofenceCenter) {
+                Log.d(TAG, "Loaded geofence center from local DB: $localCenter")
+                geofenceCenter = localCenter
+            }
+        } else {
+            Log.w(TAG, "No geofence center found in local DB")
+        }
     }
 
     private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
