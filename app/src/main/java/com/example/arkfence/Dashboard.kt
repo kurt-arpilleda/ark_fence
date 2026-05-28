@@ -845,11 +845,6 @@ class Dashboard : ComponentActivity() {
                         currentRingtone = uri
                         currentRingtoneName = name
                         saveSelectedRingtone(uri, name)
-                        RingtoneManager.setActualDefaultRingtoneUri(
-                            context,
-                            RingtoneManager.TYPE_ALARM,
-                            Uri.parse(uri)
-                        )
                         showRingtoneDialog = false
                     },
                     onDismiss = { showRingtoneDialog = false }

@@ -66,13 +66,6 @@
             android:foregroundServiceType="location"
             android:stopWithTask="false"/>
 
-        <activity
-            android:name=".AlertText"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:screenOrientation="portrait"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"/>
 
         <receiver
             android:name=".BootReceiver"

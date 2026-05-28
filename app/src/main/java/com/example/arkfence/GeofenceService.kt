@@ -1,7 +1,6 @@
 package com.example.arkfence
 
 import android.Manifest
-import android.R
 import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.Notification
@@ -70,8 +69,6 @@ class GeofenceService : Service() {
         private const val TRACKING_INTERVAL_MS = 60_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
-        private const val ALERT_NOTIFICATION_ID = 9002
-        private const val ALERT_CHANNEL_ID = "GeofenceAlertChannel"
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
         const val ACTION_ALARM_TICK = "ACTION_GEOFENCE_ALARM_TICK"
@@ -114,8 +111,6 @@ class GeofenceService : Service() {
         ).apply { setReferenceCounted(false) }
         if (wakeLock?.isHeld != true) wakeLock?.acquire()
 
-        createAlertNotificationChannel()
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val notification = Notification.Builder(this, createSilentChannel())
                 .setContentTitle("")
@@ -135,24 +130,6 @@ class GeofenceService : Service() {
         scheduleNextAlarm()
 
         Log.d(TAG, "Service created for device: $deviceId")
-    }
-
-    private fun createAlertNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                ALERT_CHANNEL_ID,
-                "Geofence Alert",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                setShowBadge(true)
-                enableLights(true)
-                enableVibration(true)
-                setSound(null, null)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
     }
 
     private fun fetchGeofenceCenter(onComplete: (() -> Unit)? = null) {
@@ -207,45 +184,8 @@ class GeofenceService : Service() {
         startAlarmSound()
     }
 
-    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
-    private fun showAlertNotification() {
-        val alertActivityIntent = Intent(this, AlertText::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-
-        val fullScreenPendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            alertActivityIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notificationBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, ALERT_CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
-
-        val notification = notificationBuilder
-            .setContentTitle("⚠️ Outside Premises")
-            .setContentText("This phone is outside the premises of Arktech please bring it back immediately")
-            .setSmallIcon(R.drawable.ic_dialog_alert)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .setContentIntent(fullScreenPendingIntent)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setPriority(Notification.PRIORITY_MAX)
-            .build()
-
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(ALERT_NOTIFICATION_ID, notification)
-    }
-
-    private fun dismissAlertNotification() {
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.cancel(ALERT_NOTIFICATION_ID)
+    private fun stopAlarm() {
+        stopAlarmSound()
     }
 
     private fun startAlarmSound() {
@@ -291,11 +231,6 @@ class GeofenceService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping alarm sound", e)
         }
-    }
-
-    private fun stopAlarm() {
-        stopAlarmSound()
-        dismissAlertNotification()
     }
 
     private fun createSilentChannel(): String {
@@ -564,7 +499,6 @@ class GeofenceService : Service() {
         trackingJob?.cancel()
         cancelAlarm()
         stopAlarmSound()
-        dismissAlertNotification()
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
         } catch (e: Exception) {
