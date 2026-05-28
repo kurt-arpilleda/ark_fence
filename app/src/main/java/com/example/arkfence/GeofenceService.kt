@@ -207,6 +207,7 @@ class GeofenceService : Service() {
         startAlarmSound()
     }
 
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun showAlertNotification() {
         val alertActivityIntent = Intent(this, AlertText::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
