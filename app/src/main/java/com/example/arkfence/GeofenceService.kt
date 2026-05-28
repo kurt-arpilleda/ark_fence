@@ -132,7 +132,7 @@ class GeofenceService : Service() {
         startTrackingLoop()
         scheduleNextAlarm()
 
-        Log.d(TAG, "Service created for device: $deviceId")
+//        Log.d(TAG, "Service created for device: $deviceId")
     }
 
     private fun fetchGeofenceCenter(onComplete: (() -> Unit)? = null) {
@@ -143,18 +143,18 @@ class GeofenceService : Service() {
                     if (newCenter != null) {
                         dbManager.insertOrUpdateGeofenceCenter(newCenter)
                         if (newCenter != geofenceCenter) {
-                            Log.d(TAG, "Geofence center updated: $newCenter")
+//                            Log.d(TAG, "Geofence center updated: $newCenter")
                             geofenceCenter = newCenter
                         }
                     }
                 } else {
-                    Log.w(TAG, "Failed to load geofence center from server, trying local DB")
+//                    Log.w(TAG, "Failed to load geofence center from server, trying local DB")
                     loadGeofenceFromLocalDB()
                 }
                 onComplete?.invoke()
             }
             override fun onFailure(call: Call<GeofenceRadiusResponse>, t: Throwable) {
-                Log.w(TAG, "Geofence fetch failed: ${t.message}, using local DB")
+//                Log.w(TAG, "Geofence fetch failed: ${t.message}, using local DB")
                 loadGeofenceFromLocalDB()
                 onComplete?.invoke()
             }
@@ -165,11 +165,11 @@ class GeofenceService : Service() {
         val localCenter = dbManager.getGeofenceCenter()
         if (localCenter != null) {
             if (localCenter != geofenceCenter) {
-                Log.d(TAG, "Loaded geofence center from local DB: $localCenter")
+//                Log.d(TAG, "Loaded geofence center from local DB: $localCenter")
                 geofenceCenter = localCenter
             }
         } else {
-            Log.w(TAG, "No geofence center found in local DB")
+//            Log.w(TAG, "No geofence center found in local DB")
         }
     }
 
@@ -236,7 +236,7 @@ class GeofenceService : Service() {
                 start()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting alarm sound", e)
+//            Log.e(TAG, "Error starting alarm sound", e)
         }
     }
 
@@ -249,7 +249,7 @@ class GeofenceService : Service() {
             }
             mediaPlayer = null
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping alarm sound", e)
+//            Log.e(TAG, "Error stopping alarm sound", e)
         }
     }
 
@@ -326,7 +326,7 @@ class GeofenceService : Service() {
                 Looper.getMainLooper()
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start location updates", e)
+//            Log.e(TAG, "Failed to start location updates", e)
         }
     }
 
@@ -348,7 +348,7 @@ class GeofenceService : Service() {
                     fetchGeofenceCenterSuspend()
                     performInsert()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Tracking loop error", e)
+//                    Log.e(TAG, "Tracking loop error", e)
                 }
                 delay(TRACKING_INTERVAL_MS)
             }
@@ -402,7 +402,7 @@ class GeofenceService : Service() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Last location fetch failed", e)
+//            Log.e(TAG, "Last location fetch failed", e)
             sendToServer("0", "0", batteryPercent, isLocationOn)
         }
     }
@@ -417,13 +417,13 @@ class GeofenceService : Service() {
         ).enqueue(object : Callback<BasicResponse> {
             override fun onResponse(call: Call<BasicResponse>, response: Response<BasicResponse>) {
                 if (response.isSuccessful && response.body()?.success == true) {
-                    Log.d(TAG, "Location inserted: lat=$lat, lng=$lng, battery=$battery")
+//                    Log.d(TAG, "Location inserted: lat=$lat, lng=$lng, battery=$battery")
                 } else {
-                    Log.w(TAG, "Server rejected insert: ${response.code()}")
+//                    Log.w(TAG, "Server rejected insert: ${response.code()}")
                 }
             }
             override fun onFailure(call: Call<BasicResponse>, t: Throwable) {
-                Log.w(TAG, "Insert failed, will retry next cycle: ${t.message}")
+//                Log.w(TAG, "Insert failed, will retry next cycle: ${t.message}")
             }
         })
     }
@@ -522,12 +522,12 @@ class GeofenceService : Service() {
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
         } catch (e: Exception) {
-            Log.w(TAG, "Error removing location updates", e)
+//            Log.w(TAG, "Error removing location updates", e)
         }
         try {
             unregisterReceiver(alarmTickReceiver)
         } catch (e: Exception) {
-            Log.w(TAG, "Receiver not registered", e)
+//            Log.w(TAG, "Receiver not registered", e)
         }
         if (wakeLock?.isHeld == true) wakeLock?.release()
 
@@ -541,7 +541,7 @@ class GeofenceService : Service() {
         }
 
         super.onDestroy()
-        Log.d(TAG, "Service destroyed, restarting...")
+//        Log.d(TAG, "Service destroyed, restarting...")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
