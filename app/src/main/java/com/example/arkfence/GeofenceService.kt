@@ -67,7 +67,7 @@ class GeofenceService : Service() {
 
     companion object {
         private const val TAG = "GeofenceService"
-        private const val TRACKING_INTERVAL_MS = 60_000L
+        private const val TRACKING_INTERVAL_MS = 10_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
         const val ACTION_START = "ACTION_START_GEOFENCE"
