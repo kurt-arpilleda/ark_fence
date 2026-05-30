@@ -11,6 +11,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.Location
 import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioManager
@@ -21,6 +22,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.RequiresPermission
@@ -58,6 +60,7 @@ class GeofenceService : Service() {
     private var deviceId: String = "unknown-device"
     private lateinit var dbManager: DBManager
 
+    private var lastValidLocation: Location? = null
     private var lastLatitude: Double? = null
     private var lastLongitude: Double? = null
 
@@ -73,6 +76,12 @@ class GeofenceService : Service() {
         private const val TRACKING_INTERVAL_MS = 10_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
+
+        private const val MAX_ACCURACY_METERS = 50f
+        private const val MAX_SPEED_MPS = 55.0f
+        private const val MAX_LOCATION_AGE_MS = 120_000L
+        private const val MIN_DISPLACEMENT_METERS = 0f
+
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
         const val ACTION_ALARM_TICK = "ACTION_GEOFENCE_ALARM_TICK"
@@ -151,6 +160,42 @@ class GeofenceService : Service() {
         .setVisibility(NotificationCompat.VISIBILITY_SECRET)
         .setOnlyAlertOnce(true)
         .build()
+
+    private fun isLocationFresh(location: Location): Boolean {
+        val ageMs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            SystemClock.elapsedRealtimeNanos() / 1_000_000L - location.elapsedRealtimeNanos / 1_000_000L
+        } else {
+            System.currentTimeMillis() - location.time
+        }
+        return ageMs < MAX_LOCATION_AGE_MS
+    }
+
+    private fun isLocationValid(newLocation: Location): Boolean {
+        if (!newLocation.hasAccuracy() || newLocation.accuracy > MAX_ACCURACY_METERS) {
+            Log.d(TAG, "Rejected: poor accuracy ${newLocation.accuracy}m")
+            return false
+        }
+
+        if (!isLocationFresh(newLocation)) {
+            Log.d(TAG, "Rejected: stale location")
+            return false
+        }
+
+        val previous = lastValidLocation
+        if (previous != null) {
+            val distance = previous.distanceTo(newLocation)
+            val timeDeltaSec = (newLocation.time - previous.time) / 1000f
+            if (timeDeltaSec > 0) {
+                val speedMps = distance / timeDeltaSec
+                if (speedMps > MAX_SPEED_MPS) {
+                    Log.d(TAG, "Rejected: impossible speed ${speedMps}m/s, distance=${distance}m")
+                    return false
+                }
+            }
+        }
+
+        return true
+    }
 
     private fun fetchGeofenceCenter(onComplete: (() -> Unit)? = null) {
         RetrofitClient.instance.getGeofenceRadius().enqueue(object : Callback<GeofenceRadiusResponse> {
@@ -299,11 +344,13 @@ class GeofenceService : Service() {
     private fun startLocationUpdates() {
         try {
             val locationRequest = LocationRequest.Builder(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                55_000L
+                Priority.PRIORITY_HIGH_ACCURACY,
+                30_000L
             )
-                .setMinUpdateIntervalMillis(50_000L)
-                .setMaxUpdateDelayMillis(65_000L)
+                .setMinUpdateIntervalMillis(15_000L)
+                .setMaxUpdateDelayMillis(45_000L)
+                .setMinUpdateDistanceMeters(MIN_DISPLACEMENT_METERS)
+                .setWaitForAccurateLocation(true)
                 .build()
 
             fusedLocationClient.requestLocationUpdates(
@@ -320,6 +367,14 @@ class GeofenceService : Service() {
         @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
+
+            if (!isLocationValid(location)) {
+                Log.d(TAG, "Location fix rejected lat=${location.latitude} lng=${location.longitude} acc=${location.accuracy}")
+                return
+            }
+
+            Log.d(TAG, "Valid location accepted acc=${location.accuracy}m lat=${location.latitude} lng=${location.longitude}")
+            lastValidLocation = location
             lastLatitude = location.latitude
             lastLongitude = location.longitude
             checkGeofence(location.latitude, location.longitude)
@@ -367,24 +422,24 @@ class GeofenceService : Service() {
             val lastKnown = fusedLocationClient.lastLocation
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 lastKnown.addOnSuccessListener { location ->
-                    if (location != null) {
+                    if (location != null && isLocationValid(location)) {
+                        lastValidLocation = location
                         lastLatitude = location.latitude
                         lastLongitude = location.longitude
                         checkGeofence(location.latitude, location.longitude)
                         sendToServer(location.latitude.toString(), location.longitude.toString(), batteryPercent, isLocationOn)
                     } else {
-                        sendToServer("0", "0", batteryPercent, isLocationOn)
+                        Log.d(TAG, "lastLocation invalid or null, skipping insert")
                     }
                     if (continuation.isActive) continuation.resume(Unit)
                 }
                 lastKnown.addOnFailureListener {
-                    sendToServer("0", "0", batteryPercent, isLocationOn)
+                    Log.e(TAG, "lastLocation fetch failed")
                     if (continuation.isActive) continuation.resume(Unit)
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Last location fetch failed", e)
-            sendToServer("0", "0", batteryPercent, isLocationOn)
         }
     }
 
