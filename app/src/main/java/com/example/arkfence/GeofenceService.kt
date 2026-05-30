@@ -3,7 +3,6 @@ package com.example.arkfence
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlarmManager
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -25,6 +24,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.RequiresPermission
+import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -68,6 +68,8 @@ class GeofenceService : Service() {
 
     companion object {
         private const val TAG = "GeofenceService"
+        private const val CHANNEL_ID = "GeofenceServiceChannel"
+        private const val NOTIFICATION_ID = 9001
         private const val TRACKING_INTERVAL_MS = 10_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
@@ -94,7 +96,7 @@ class GeofenceService : Service() {
         }
     }
 
-    @SuppressLint("HardwareIds")
+    @SuppressLint("HardwareIds", "WakelockTimeout")
     override fun onCreate() {
         super.onCreate()
         deviceId = try {
@@ -104,7 +106,6 @@ class GeofenceService : Service() {
         }
 
         dbManager = DBManager(applicationContext)
-
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
@@ -115,26 +116,41 @@ class GeofenceService : Service() {
         ).apply { setReferenceCounted(false) }
         if (wakeLock?.isHeld != true) wakeLock?.acquire()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val notification = Notification.Builder(this, createSilentChannel())
-                .setContentTitle("")
-                .setContentText("")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setOngoing(true)
-                .setVisibility(Notification.VISIBILITY_SECRET)
-                .build()
-            startForeground(9001, notification)
-        } else {
-            startForeground(9001, createLegacyNotification())
-        }
+        createNotificationChannel()
+        startForeground(NOTIFICATION_ID, buildNotification())
 
         registerAlarmReceiver()
         startLocationUpdates()
         startTrackingLoop()
         scheduleNextAlarm()
-
-//        Log.d(TAG, "Service created for device: $deviceId")
     }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Location Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                setShowBadge(false)
+                enableLights(false)
+                enableVibration(false)
+                setSound(null, null)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle("")
+        .setContentText("")
+        .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+        .setOngoing(true)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        .setOnlyAlertOnce(true)
+        .build()
 
     private fun fetchGeofenceCenter(onComplete: (() -> Unit)? = null) {
         RetrofitClient.instance.getGeofenceRadius().enqueue(object : Callback<GeofenceRadiusResponse> {
@@ -143,19 +159,14 @@ class GeofenceService : Service() {
                     val newCenter = response.body()?.center
                     if (newCenter != null) {
                         dbManager.insertOrUpdateGeofenceCenter(newCenter)
-                        if (newCenter != geofenceCenter) {
-//                            Log.d(TAG, "Geofence center updated: $newCenter")
-                            geofenceCenter = newCenter
-                        }
+                        if (newCenter != geofenceCenter) geofenceCenter = newCenter
                     }
                 } else {
-//                    Log.w(TAG, "Failed to load geofence center from server, trying local DB")
                     loadGeofenceFromLocalDB()
                 }
                 onComplete?.invoke()
             }
             override fun onFailure(call: Call<GeofenceRadiusResponse>, t: Throwable) {
-//                Log.w(TAG, "Geofence fetch failed: ${t.message}, using local DB")
                 loadGeofenceFromLocalDB()
                 onComplete?.invoke()
             }
@@ -164,13 +175,8 @@ class GeofenceService : Service() {
 
     private fun loadGeofenceFromLocalDB() {
         val localCenter = dbManager.getGeofenceCenter()
-        if (localCenter != null) {
-            if (localCenter != geofenceCenter) {
-//                Log.d(TAG, "Loaded geofence center from local DB: $localCenter")
-                geofenceCenter = localCenter
-            }
-        } else {
-//            Log.w(TAG, "No geofence center found in local DB")
+        if (localCenter != null && localCenter != geofenceCenter) {
+            geofenceCenter = localCenter
         }
     }
 
@@ -202,6 +208,7 @@ class GeofenceService : Service() {
             stopAlarm()
         }
     }
+
     private fun sendGeofenceAlert() {
         if (hasSentAlertForCurrentExit) return
         hasSentAlertForCurrentExit = true
@@ -216,6 +223,7 @@ class GeofenceService : Service() {
             }
         })
     }
+
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun triggerAlarm() {
         startAlarmSound()
@@ -253,7 +261,7 @@ class GeofenceService : Service() {
                 start()
             }
         } catch (e: Exception) {
-//            Log.e(TAG, "Error starting alarm sound", e)
+            Log.e(TAG, "Error starting alarm sound", e)
         }
     }
 
@@ -266,42 +274,7 @@ class GeofenceService : Service() {
             }
             mediaPlayer = null
         } catch (e: Exception) {
-//            Log.e(TAG, "Error stopping alarm sound", e)
-        }
-    }
-
-    private fun createSilentChannel(): String {
-        val channelId = "GeofenceServiceChannel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Location Service",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                setShowBadge(false)
-                enableLights(false)
-                enableVibration(false)
-                setSound(null, null)
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-        return channelId
-    }
-
-    private fun createLegacyNotification(): Notification {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, createSilentChannel())
-                .setOngoing(true)
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .build()
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-                .setOngoing(true)
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setPriority(Notification.PRIORITY_MIN)
-                .build()
+            Log.e(TAG, "Error stopping alarm sound", e)
         }
     }
 
@@ -312,15 +285,11 @@ class GeofenceService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_ALARM_TICK -> {
-                if (trackingJob?.isActive != true) {
-                    startTrackingLoop()
-                }
+                if (trackingJob?.isActive != true) startTrackingLoop()
                 scheduleNextAlarm()
             }
             else -> {
-                if (trackingJob?.isActive != true) {
-                    startTrackingLoop()
-                }
+                if (trackingJob?.isActive != true) startTrackingLoop()
             }
         }
         return START_STICKY
@@ -343,7 +312,7 @@ class GeofenceService : Service() {
                 Looper.getMainLooper()
             )
         } catch (e: Exception) {
-//            Log.e(TAG, "Failed to start location updates", e)
+            Log.e(TAG, "Failed to start location updates", e)
         }
     }
 
@@ -365,7 +334,7 @@ class GeofenceService : Service() {
                     fetchGeofenceCenterSuspend()
                     performInsert()
                 } catch (e: Exception) {
-//                    Log.e(TAG, "Tracking loop error", e)
+                    Log.e(TAG, "Tracking loop error", e)
                 }
                 delay(TRACKING_INTERVAL_MS)
             }
@@ -402,12 +371,7 @@ class GeofenceService : Service() {
                         lastLatitude = location.latitude
                         lastLongitude = location.longitude
                         checkGeofence(location.latitude, location.longitude)
-                        sendToServer(
-                            location.latitude.toString(),
-                            location.longitude.toString(),
-                            batteryPercent,
-                            isLocationOn
-                        )
+                        sendToServer(location.latitude.toString(), location.longitude.toString(), batteryPercent, isLocationOn)
                     } else {
                         sendToServer("0", "0", batteryPercent, isLocationOn)
                     }
@@ -419,7 +383,7 @@ class GeofenceService : Service() {
                 }
             }
         } catch (e: Exception) {
-//            Log.e(TAG, "Last location fetch failed", e)
+            Log.e(TAG, "Last location fetch failed", e)
             sendToServer("0", "0", batteryPercent, isLocationOn)
         }
     }
@@ -432,16 +396,8 @@ class GeofenceService : Service() {
             batteryPercent = battery,
             isLocationOn = isLocationOn
         ).enqueue(object : Callback<BasicResponse> {
-            override fun onResponse(call: Call<BasicResponse>, response: Response<BasicResponse>) {
-                if (response.isSuccessful && response.body()?.success == true) {
-//                    Log.d(TAG, "Location inserted: lat=$lat, lng=$lng, battery=$battery")
-                } else {
-//                    Log.w(TAG, "Server rejected insert: ${response.code()}")
-                }
-            }
-            override fun onFailure(call: Call<BasicResponse>, t: Throwable) {
-//                Log.w(TAG, "Insert failed, will retry next cycle: ${t.message}")
-            }
+            override fun onResponse(call: Call<BasicResponse>, response: Response<BasicResponse>) {}
+            override fun onFailure(call: Call<BasicResponse>, t: Throwable) {}
         })
     }
 
@@ -479,9 +435,7 @@ class GeofenceService : Service() {
     private val alarmTickReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == ACTION_ALARM_TICK) {
-                if (trackingJob?.isActive != true) {
-                    startTrackingLoop()
-                }
+                if (trackingJob?.isActive != true) startTrackingLoop()
                 scheduleNextAlarm()
             }
         }
@@ -500,11 +454,7 @@ class GeofenceService : Service() {
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAt,
-                    alarmPendingIntent!!
-                )
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, alarmPendingIntent!!)
             } else {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, alarmPendingIntent!!)
             }
@@ -518,17 +468,7 @@ class GeofenceService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val restartIntent = Intent(applicationContext, GeofenceService::class.java).apply {
-            action = ACTION_START
-        }
-        val pendingIntent = PendingIntent.getService(
-            applicationContext,
-            8001,
-            restartIntent,
-            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-        alarm.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 2000, pendingIntent)
+        GeofenceMonitoringManager.getInstance(applicationContext).startMonitoring()
         super.onTaskRemoved(rootIntent)
     }
 
@@ -539,26 +479,18 @@ class GeofenceService : Service() {
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
         } catch (e: Exception) {
-//            Log.w(TAG, "Error removing location updates", e)
+            Log.w(TAG, "Error removing location updates", e)
         }
         try {
             unregisterReceiver(alarmTickReceiver)
         } catch (e: Exception) {
-//            Log.w(TAG, "Receiver not registered", e)
+            Log.w(TAG, "Receiver not registered", e)
         }
         if (wakeLock?.isHeld == true) wakeLock?.release()
 
-        val restartIntent = Intent(applicationContext, GeofenceService::class.java).apply {
-            action = ACTION_START
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            applicationContext.startForegroundService(restartIntent)
-        } else {
-            applicationContext.startService(restartIntent)
-        }
+        GeofenceMonitoringManager.getInstance(applicationContext).startMonitoring()
 
         super.onDestroy()
-//        Log.d(TAG, "Service destroyed, restarting...")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

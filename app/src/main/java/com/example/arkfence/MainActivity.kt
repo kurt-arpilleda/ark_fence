@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
     private val requestBackgroundPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
-        startServiceAndDashboard()
+        startMonitoringAndDashboard()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,19 +50,12 @@ class MainActivity : ComponentActivity() {
         ) {
             requestBackgroundPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         } else {
-            startServiceAndDashboard()
+            startMonitoringAndDashboard()
         }
     }
 
-    private fun startServiceAndDashboard() {
-        val serviceIntent = Intent(this, GeofenceService::class.java).apply {
-            action = GeofenceService.ACTION_START
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
+    private fun startMonitoringAndDashboard() {
+        GeofenceMonitoringManager.getInstance(this).startMonitoring()
         startActivity(Intent(this, Dashboard::class.java))
         finish()
     }
