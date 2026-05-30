@@ -172,12 +172,12 @@ class GeofenceService : Service() {
 
     private fun isLocationValid(newLocation: Location): Boolean {
         if (!newLocation.hasAccuracy() || newLocation.accuracy > MAX_ACCURACY_METERS) {
-            Log.d(TAG, "Rejected: poor accuracy ${newLocation.accuracy}m")
+//            Log.d(TAG, "Rejected: poor accuracy ${newLocation.accuracy}m")
             return false
         }
 
         if (!isLocationFresh(newLocation)) {
-            Log.d(TAG, "Rejected: stale location")
+//            Log.d(TAG, "Rejected: stale location")
             return false
         }
 
@@ -188,7 +188,7 @@ class GeofenceService : Service() {
             if (timeDeltaSec > 0) {
                 val speedMps = distance / timeDeltaSec
                 if (speedMps > MAX_SPEED_MPS) {
-                    Log.d(TAG, "Rejected: impossible speed ${speedMps}m/s, distance=${distance}m")
+//                    Log.d(TAG, "Rejected: impossible speed ${speedMps}m/s, distance=${distance}m")
                     return false
                 }
             }
@@ -306,7 +306,7 @@ class GeofenceService : Service() {
                 start()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting alarm sound", e)
+//            Log.e(TAG, "Error starting alarm sound", e)
         }
     }
 
@@ -319,7 +319,7 @@ class GeofenceService : Service() {
             }
             mediaPlayer = null
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping alarm sound", e)
+//            Log.e(TAG, "Error stopping alarm sound", e)
         }
     }
 
@@ -359,7 +359,7 @@ class GeofenceService : Service() {
                 Looper.getMainLooper()
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start location updates", e)
+//            Log.e(TAG, "Failed to start location updates", e)
         }
     }
 
@@ -369,11 +369,11 @@ class GeofenceService : Service() {
             val location = result.lastLocation ?: return
 
             if (!isLocationValid(location)) {
-                Log.d(TAG, "Location fix rejected lat=${location.latitude} lng=${location.longitude} acc=${location.accuracy}")
+//                Log.d(TAG, "Location fix rejected lat=${location.latitude} lng=${location.longitude} acc=${location.accuracy}")
                 return
             }
 
-            Log.d(TAG, "Valid location accepted acc=${location.accuracy}m lat=${location.latitude} lng=${location.longitude}")
+//            Log.d(TAG, "Valid location accepted acc=${location.accuracy}m lat=${location.latitude} lng=${location.longitude}")
             lastValidLocation = location
             lastLatitude = location.latitude
             lastLongitude = location.longitude
@@ -389,7 +389,7 @@ class GeofenceService : Service() {
                     fetchGeofenceCenterSuspend()
                     performInsert()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Tracking loop error", e)
+//                    Log.e(TAG, "Tracking loop error", e)
                 }
                 delay(TRACKING_INTERVAL_MS)
             }
@@ -429,17 +429,17 @@ class GeofenceService : Service() {
                         checkGeofence(location.latitude, location.longitude)
                         sendToServer(location.latitude.toString(), location.longitude.toString(), batteryPercent, isLocationOn)
                     } else {
-                        Log.d(TAG, "lastLocation invalid or null, skipping insert")
+//                        Log.d(TAG, "lastLocation invalid or null, skipping insert")
                     }
                     if (continuation.isActive) continuation.resume(Unit)
                 }
                 lastKnown.addOnFailureListener {
-                    Log.e(TAG, "lastLocation fetch failed")
+//                    Log.e(TAG, "lastLocation fetch failed")
                     if (continuation.isActive) continuation.resume(Unit)
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Last location fetch failed", e)
+//            Log.e(TAG, "Last location fetch failed", e)
         }
     }
 
@@ -534,12 +534,12 @@ class GeofenceService : Service() {
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
         } catch (e: Exception) {
-            Log.w(TAG, "Error removing location updates", e)
+//            Log.w(TAG, "Error removing location updates", e)
         }
         try {
             unregisterReceiver(alarmTickReceiver)
         } catch (e: Exception) {
-            Log.w(TAG, "Receiver not registered", e)
+//            Log.w(TAG, "Receiver not registered", e)
         }
         if (wakeLock?.isHeld == true) wakeLock?.release()
 
