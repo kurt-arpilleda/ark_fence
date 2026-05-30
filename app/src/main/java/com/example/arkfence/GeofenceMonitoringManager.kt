@@ -47,7 +47,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
     private val workManager = WorkManager.getInstance(context)
 
     fun startMonitoring() {
-        Log.d(TAG, "Starting geofence monitoring system")
+//        Log.d(TAG, "Starting geofence monitoring system")
         startGeofenceService()
         scheduleJobScheduler()
         scheduleWorkManager()
@@ -55,7 +55,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
     }
 
     fun stopMonitoring() {
-        Log.d(TAG, "Stopping geofence monitoring system")
+//        Log.d(TAG, "Stopping geofence monitoring system")
         jobScheduler.cancel(JOB_ID)
         workManager.cancelUniqueWork(WORK_NAME)
         workManager.cancelUniqueWork("${WORK_NAME}_Restart")
@@ -96,7 +96,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             .build()
 
         val result = jobScheduler.schedule(jobInfo)
-        Log.d(TAG, "JobScheduler scheduled with result: $result")
+//        Log.d(TAG, "JobScheduler scheduled with result: $result")
     }
 
     private fun scheduleWorkManager() {
@@ -126,7 +126,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             ExistingPeriodicWorkPolicy.KEEP,
             workRequest
         )
-        Log.d(TAG, "WorkManager scheduled")
+//        Log.d(TAG, "WorkManager scheduled")
     }
 
     private fun schedulePeriodicRestart() {
@@ -147,7 +147,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             ExistingPeriodicWorkPolicy.KEEP,
             restartRequest
         )
-        Log.d(TAG, "Periodic restart scheduled")
+//        Log.d(TAG, "Periodic restart scheduled")
     }
 }
 
@@ -179,11 +179,11 @@ class GeofenceMonitoringJobService : JobService() {
     private val scope = CoroutineScope(Dispatchers.IO)
 
     override fun onStartJob(params: JobParameters?): Boolean {
-        Log.d("GeofenceJobService", "Job started")
+//        Log.d("GeofenceJobService", "Job started")
         scope.launch {
             try {
                 if (!GeofenceServiceUtils.isServiceRunning(this@GeofenceMonitoringJobService, GeofenceService::class.java)) {
-                    Log.d("GeofenceJobService", "GeofenceService not running, starting it")
+//                    Log.d("GeofenceJobService", "GeofenceService not running, starting it")
                     val intent = Intent(this@GeofenceMonitoringJobService, GeofenceService::class.java).apply {
                         action = GeofenceService.ACTION_START
                         putExtra("restart_from_job", true)
@@ -207,7 +207,7 @@ class GeofenceMonitoringJobService : JobService() {
                     jobScheduler.schedule(jobInfo)
                 }
             } catch (e: Exception) {
-                Log.e("GeofenceJobService", "Error in job execution", e)
+//                Log.e("GeofenceJobService", "Error in job execution", e)
             } finally {
                 jobFinished(params, false)
             }
@@ -216,7 +216,7 @@ class GeofenceMonitoringJobService : JobService() {
     }
 
     override fun onStopJob(params: JobParameters?): Boolean {
-        Log.d("GeofenceJobService", "Job stopped")
+//        Log.d("GeofenceJobService", "Job stopped")
         return false
     }
 }
@@ -228,13 +228,13 @@ class GeofenceMonitoringWorker(
 
     override suspend fun doWork(): Result {
         return try {
-            Log.d("GeofenceMonitoringWorker", "WorkManager worker executing")
+//            Log.d("GeofenceMonitoringWorker", "WorkManager worker executing")
             val serviceInfo = GeofenceServiceUtils.getServiceInfo(applicationContext, GeofenceService::class.java)
 
             if (serviceInfo != null) {
-                Log.d("GeofenceMonitoringWorker", "GeofenceService is running")
+//                Log.d("GeofenceMonitoringWorker", "GeofenceService is running")
             } else {
-                Log.d("GeofenceMonitoringWorker", "GeofenceService not running, starting from WorkManager")
+//                Log.d("GeofenceMonitoringWorker", "GeofenceService not running, starting from WorkManager")
                 val intent = Intent(applicationContext, GeofenceService::class.java).apply {
                     action = GeofenceService.ACTION_START
                     putExtra("restart_from_worker", true)
@@ -247,7 +247,7 @@ class GeofenceMonitoringWorker(
             }
             Result.success()
         } catch (e: Exception) {
-            Log.e("GeofenceMonitoringWorker", "WorkManager execution failed", e)
+//            Log.e("GeofenceMonitoringWorker", "WorkManager execution failed", e)
             Result.retry()
         }
     }
@@ -260,7 +260,7 @@ class GeofenceServiceRestartWorker(
 
     override suspend fun doWork(): Result {
         return try {
-            Log.d("GeofenceServiceRestartWorker", "Periodic restart executing")
+//            Log.d("GeofenceServiceRestartWorker", "Periodic restart executing")
 
             val stopIntent = Intent(applicationContext, GeofenceService::class.java).apply {
                 action = GeofenceService.ACTION_STOP
@@ -279,10 +279,10 @@ class GeofenceServiceRestartWorker(
                 applicationContext.startService(startIntent)
             }
 
-            Log.d("GeofenceServiceRestartWorker", "GeofenceService restarted successfully")
+//            Log.d("GeofenceServiceRestartWorker", "GeofenceService restarted successfully")
             Result.success()
         } catch (e: Exception) {
-            Log.e("GeofenceServiceRestartWorker", "Service restart failed", e)
+//            Log.e("GeofenceServiceRestartWorker", "Service restart failed", e)
             Result.retry()
         }
     }
