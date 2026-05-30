@@ -73,14 +73,14 @@ class GeofenceService : Service() {
         private const val TAG = "GeofenceService"
         private const val CHANNEL_ID = "GeofenceServiceChannel"
         private const val NOTIFICATION_ID = 9001
-        private const val TRACKING_INTERVAL_MS = 10_000L
+        private const val TRACKING_INTERVAL_MS = 30_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
 
-        private const val MAX_ACCURACY_METERS = 50f
+        private const val MAX_ACCURACY_METERS = 100f
         private const val MAX_SPEED_MPS = 55.0f
         private const val MAX_LOCATION_AGE_MS = 120_000L
-        private const val MIN_DISPLACEMENT_METERS = 0f
+        private const val MIN_DISPLACEMENT_METERS = 5f
 
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
@@ -123,7 +123,6 @@ class GeofenceService : Service() {
             PowerManager.PARTIAL_WAKE_LOCK,
             "GeofenceService::WakeLock"
         ).apply { setReferenceCounted(false) }
-        if (wakeLock?.isHeld != true) wakeLock?.acquire()
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
@@ -344,13 +343,13 @@ class GeofenceService : Service() {
     private fun startLocationUpdates() {
         try {
             val locationRequest = LocationRequest.Builder(
-                Priority.PRIORITY_HIGH_ACCURACY,
+                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
                 30_000L
             )
-                .setMinUpdateIntervalMillis(15_000L)
-                .setMaxUpdateDelayMillis(45_000L)
+                .setMinUpdateIntervalMillis(20_000L)
+                .setMaxUpdateDelayMillis(60_000L)
                 .setMinUpdateDistanceMeters(MIN_DISPLACEMENT_METERS)
-                .setWaitForAccurateLocation(true)
+                .setWaitForAccurateLocation(false)
                 .build()
 
             fusedLocationClient.requestLocationUpdates(
@@ -386,10 +385,12 @@ class GeofenceService : Service() {
         trackingJob = serviceScope.launch {
             while (isActive) {
                 try {
+                    if (wakeLock?.isHeld != true) wakeLock?.acquire(60_000L)
                     fetchGeofenceCenterSuspend()
                     performInsert()
                 } catch (e: Exception) {
-//                    Log.e(TAG, "Tracking loop error", e)
+                } finally {
+                    if (wakeLock?.isHeld == true) wakeLock?.release()
                 }
                 delay(TRACKING_INTERVAL_MS)
             }
