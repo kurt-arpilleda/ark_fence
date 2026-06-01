@@ -73,7 +73,7 @@ class GeofenceService : Service() {
         private const val TAG = "GeofenceService"
         private const val CHANNEL_ID = "GeofenceServiceChannel"
         private const val NOTIFICATION_ID = 9001
-        private const val TRACKING_INTERVAL_MS = 10_000L
+        private const val TRACKING_INTERVAL_MS = 20_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
 
@@ -156,7 +156,7 @@ class GeofenceService : Service() {
         .setContentText("")
         .setSmallIcon(android.R.drawable.ic_menu_mylocation)
         .setOngoing(true)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
         .setVisibility(NotificationCompat.VISIBILITY_SECRET)
         .setOnlyAlertOnce(true)
         .build()
