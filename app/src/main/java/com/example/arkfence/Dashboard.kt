@@ -12,6 +12,7 @@ import android.database.Cursor
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
@@ -127,6 +128,8 @@ class Dashboard : ComponentActivity() {
 
     private lateinit var appUpdateService: AppUpdateService
     private var connectivityReceiver: ConnectivityReceiver? = null
+    private var locationReceiver: LocationModeReceiver? = null
+    private val locationEnabledState = mutableStateOf(true)
 
     companion object {
         private const val RINGTONE_PREF_KEY = "selected_ringtone_uri"
@@ -315,6 +318,8 @@ class Dashboard : ComponentActivity() {
         super.onResume()
         registerConnectivityReceiver()
         checkForUpdates()
+        locationEnabledState.value = isLocationEnabled()
+        registerLocationReceiver()
     }
 
     override fun onPause() {
@@ -322,11 +327,17 @@ class Dashboard : ComponentActivity() {
         connectivityReceiver?.let {
             try { unregisterReceiver(it) } catch (e: IllegalArgumentException) { }
         }
+        locationReceiver?.let {
+            try { unregisterReceiver(it) } catch (e: IllegalArgumentException) { }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         connectivityReceiver?.let {
+            try { unregisterReceiver(it) } catch (e: IllegalArgumentException) { }
+        }
+        locationReceiver?.let {
             try { unregisterReceiver(it) } catch (e: IllegalArgumentException) { }
         }
     }
@@ -400,6 +411,12 @@ class Dashboard : ComponentActivity() {
         return true
     }
 
+    private fun isLocationEnabled(): Boolean {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    }
+
     private fun openBatteryOptimizationSettings() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -456,6 +473,22 @@ class Dashboard : ComponentActivity() {
         }
     }
 
+    private fun registerLocationReceiver() {
+        locationReceiver?.let {
+            try { unregisterReceiver(it) } catch (e: IllegalArgumentException) { }
+        }
+        locationReceiver = LocationModeReceiver()
+        registerReceiver(locationReceiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
+    }
+
+    inner class LocationModeReceiver : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
+                locationEnabledState.value = isLocationEnabled()
+            }
+        }
+    }
+
     // ─── Composables ─────────────────────────────────────────────────────────
 
     @Composable
@@ -505,6 +538,11 @@ class Dashboard : ComponentActivity() {
         var isLoading by remember { mutableStateOf(true) }
         var errorMessage by remember { mutableStateOf<String?>(null) }
         var showInstruction by remember { mutableStateOf(true) }
+        var showLocationDialog by remember { mutableStateOf(!locationEnabledState.value) }
+
+        LaunchedEffect(locationEnabledState.value) {
+            if (!locationEnabledState.value) showLocationDialog = true
+        }
 
         // Kick off the permission chain on first composition
         LaunchedEffect(Unit) {
@@ -799,6 +837,13 @@ class Dashboard : ComponentActivity() {
                                 onDismiss = { showInstruction = false }
                             )
                         }
+
+                        if (showLocationDialog) {
+                            LocationEnableDialog(
+                                currentLanguage = currentLanguage,
+                                onDismiss = { showLocationDialog = false }
+                            )
+                        }
                     }
                 }
             }
@@ -845,6 +890,58 @@ class Dashboard : ComponentActivity() {
                     )
                 ) {
                     Text(getTranslatedText("OK", "了解"))
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+        )
+    }
+
+    @Composable
+    fun LocationEnableDialog(currentLanguage: String, onDismiss: () -> Unit) {
+        val context = LocalContext.current
+
+        fun getTranslatedText(englishText: String, japaneseText: String): String =
+            if (currentLanguage == "ja") japaneseText else englishText
+
+        AlertDialog(
+            onDismissRequest = {},
+            title = {
+                Text(
+                    text = getTranslatedText("Location Required", "位置情報が必要です"),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Text(
+                    text = getTranslatedText(
+                        "Location services are currently disabled. This app requires location to be turned on in order to monitor your geofence. Please enable location in your device settings.",
+                        "位置情報サービスが無効になっています。このアプリはジオフェンスを監視するために位置情報をオンにする必要があります。デバイスの設定で位置情報を有効にしてください。"
+                    ),
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDismiss()
+                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Text(getTranslatedText("Enable Location", "位置情報を有効にする"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text(getTranslatedText("Dismiss", "閉じる"))
                 }
             },
             containerColor = MaterialTheme.colorScheme.surface,
