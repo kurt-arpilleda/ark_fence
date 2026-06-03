@@ -79,7 +79,7 @@ class GeofenceService : Service() {
         private const val TAG = "GeofenceService"
         private const val CHANNEL_ID = "GeofenceServiceChannel"
         private const val NOTIFICATION_ID = 9001
-        private const val TRACKING_INTERVAL_MS = 20_000L
+        private const val TRACKING_INTERVAL_MS = 15_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val HEARTBEAT_INTERVAL_MS = 600_000L
         private const val RESTART_INTERVAL_MS = 600_000L
