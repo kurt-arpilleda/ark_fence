@@ -48,18 +48,23 @@ data class RingtoneInfo(
     val uri: String
 )
 
-data class GeofenceCenter(
+data class PolygonPoint(
+    val pointOrder: Int,
+    val pointLatitude: Double,
+    val pointLongitude: Double
+)
+
+data class GeofencePolygon(
     val centerId: Int,
-    val centerLatitude: Double,
-    val centerLongitude: Double,
-    val radiusMeters: Double
+    val points: List<PolygonPoint>
 )
 
 data class GeofenceRadiusResponse(
     val success: Boolean,
-    val center: GeofenceCenter?,
+    val polygon: GeofencePolygon?,
     val error: String?
 )
+
 data class GeofenceAlertResponse(
     val success: Boolean,
     val error: String?

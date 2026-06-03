@@ -9,21 +9,22 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
 
     companion object {
         private const val DATABASE_NAME = "arkfence.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
         private const val TABLE_GEOFENCE = "it_arktechLocation"
         private const val COL_CENTER_ID = "centerId"
-        private const val COL_CENTER_LAT = "centerLatitude"
-        private const val COL_CENTER_LNG = "centerLongitude"
-        private const val COL_RADIUS = "radiusMeters"
+        private const val COL_POINT_ORDER = "pointOrder"
+        private const val COL_POINT_LAT = "pointLatitude"
+        private const val COL_POINT_LNG = "pointLongitude"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
         val createTable = """
             CREATE TABLE $TABLE_GEOFENCE (
-                $COL_CENTER_ID INTEGER PRIMARY KEY,
-                $COL_CENTER_LAT REAL NOT NULL,
-                $COL_CENTER_LNG REAL NOT NULL,
-                $COL_RADIUS REAL NOT NULL
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_CENTER_ID INTEGER NOT NULL,
+                $COL_POINT_ORDER INTEGER NOT NULL,
+                $COL_POINT_LAT REAL NOT NULL,
+                $COL_POINT_LNG REAL NOT NULL
             )
         """.trimIndent()
         db.execSQL(createTable)
@@ -34,38 +35,40 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
         onCreate(db)
     }
 
-    fun insertOrUpdateGeofenceCenter(center: GeofenceCenter) {
+    fun insertOrUpdateGeofencePolygon(polygon: GeofencePolygon) {
         val db = writableDatabase
-        val values = ContentValues().apply {
-            put(COL_CENTER_ID, center.centerId)
-            put(COL_CENTER_LAT, center.centerLatitude)
-            put(COL_CENTER_LNG, center.centerLongitude)
-            put(COL_RADIUS, center.radiusMeters)
-        }
-        val rows = db.update(TABLE_GEOFENCE, values, "$COL_CENTER_ID = ?", arrayOf(center.centerId.toString()))
-        if (rows == 0) {
+        db.delete(TABLE_GEOFENCE, "$COL_CENTER_ID = ?", arrayOf(polygon.centerId.toString()))
+        for (point in polygon.points) {
+            val values = ContentValues().apply {
+                put(COL_CENTER_ID, polygon.centerId)
+                put(COL_POINT_ORDER, point.pointOrder)
+                put(COL_POINT_LAT, point.pointLatitude)
+                put(COL_POINT_LNG, point.pointLongitude)
+            }
             db.insert(TABLE_GEOFENCE, null, values)
         }
         db.close()
     }
 
-    fun getGeofenceCenter(): GeofenceCenter? {
+    fun getGeofencePolygon(): GeofencePolygon? {
         val db = readableDatabase
-        val cursor = db.query(TABLE_GEOFENCE, null, null, null, null, null, null)
-        return if (cursor.moveToFirst()) {
-            val center = GeofenceCenter(
-                centerId = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CENTER_ID)),
-                centerLatitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_CENTER_LAT)),
-                centerLongitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_CENTER_LNG)),
-                radiusMeters = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_RADIUS))
+        val cursor = db.query(
+            TABLE_GEOFENCE, null,
+            "$COL_CENTER_ID = ?", arrayOf("1"),
+            null, null, "$COL_POINT_ORDER ASC"
+        )
+        val points = mutableListOf<PolygonPoint>()
+        while (cursor.moveToNext()) {
+            points.add(
+                PolygonPoint(
+                    pointOrder     = cursor.getInt(cursor.getColumnIndexOrThrow(COL_POINT_ORDER)),
+                    pointLatitude  = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_POINT_LAT)),
+                    pointLongitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_POINT_LNG))
+                )
             )
-            cursor.close()
-            db.close()
-            center
-        } else {
-            cursor.close()
-            db.close()
-            null
         }
+        cursor.close()
+        db.close()
+        return if (points.isNotEmpty()) GeofencePolygon(centerId = 1, points = points) else null
     }
 }

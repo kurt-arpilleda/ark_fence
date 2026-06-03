@@ -68,7 +68,7 @@ class GeofenceService : Service() {
     private var lastLatitude: Double? = null
     private var lastLongitude: Double? = null
 
-    private var geofenceCenter: GeofenceCenter? = null
+    private var geofencePolygon: GeofencePolygon? = null
     private var isOutsideGeofence = false
     private var mediaPlayer: MediaPlayer? = null
     private var hasSentAlertForCurrentExit = false
@@ -218,14 +218,32 @@ class GeofenceService : Service() {
         return true
     }
 
-    private fun fetchGeofenceCenter(onComplete: (() -> Unit)? = null) {
+    private fun isPointInPolygon(lat: Double, lng: Double, polygon: GeofencePolygon): Boolean {
+        val points = polygon.points
+        if (points.size < 3) return false
+        var inside = false
+        var j = points.size - 1
+        for (i in points.indices) {
+            val xi = points[i].pointLongitude
+            val yi = points[i].pointLatitude
+            val xj = points[j].pointLongitude
+            val yj = points[j].pointLatitude
+            val intersect = ((yi > lat) != (yj > lat)) &&
+                    (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+            if (intersect) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
+    private fun fetchGeofencePolygon(onComplete: (() -> Unit)? = null) {
         RetrofitClient.instance.getGeofenceRadius().enqueue(object : Callback<GeofenceRadiusResponse> {
             override fun onResponse(call: Call<GeofenceRadiusResponse>, response: Response<GeofenceRadiusResponse>) {
                 if (response.isSuccessful && response.body()?.success == true) {
-                    val newCenter = response.body()?.center
-                    if (newCenter != null) {
-                        dbManager.insertOrUpdateGeofenceCenter(newCenter)
-                        if (newCenter != geofenceCenter) geofenceCenter = newCenter
+                    val newPolygon = response.body()?.polygon
+                    if (newPolygon != null) {
+                        dbManager.insertOrUpdateGeofencePolygon(newPolygon)
+                        geofencePolygon = newPolygon
                     }
                 } else {
                     loadGeofenceFromLocalDB()
@@ -240,28 +258,16 @@ class GeofenceService : Service() {
     }
 
     private fun loadGeofenceFromLocalDB() {
-        val localCenter = dbManager.getGeofenceCenter()
-        if (localCenter != null && localCenter != geofenceCenter) {
-            geofenceCenter = localCenter
+        val localPolygon = dbManager.getGeofencePolygon()
+        if (localPolygon != null) {
+            geofencePolygon = localPolygon
         }
-    }
-
-    private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val earthRadius = 6371000.0
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = sin(dLat / 2).pow(2) +
-                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
-                sin(dLon / 2).pow(2)
-        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return earthRadius * c
     }
 
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun checkGeofence(lat: Double, lng: Double) {
-        val center = geofenceCenter ?: return
-        val distance = calculateDistance(lat, lng, center.centerLatitude, center.centerLongitude)
-        val outside = distance > center.radiusMeters
+        val polygon = geofencePolygon ?: return
+        val outside = !isPointInPolygon(lat, lng, polygon)
 
         if (outside && !isOutsideGeofence) {
             isOutsideGeofence = true
@@ -467,7 +473,7 @@ class GeofenceService : Service() {
 
     private suspend fun fetchGeofenceCenterSuspend() {
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-            fetchGeofenceCenter {
+            fetchGeofencePolygon {
                 if (continuation.isActive) continuation.resume(Unit)
             }
         }
