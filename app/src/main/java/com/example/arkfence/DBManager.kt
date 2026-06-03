@@ -9,8 +9,9 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
 
     companion object {
         private const val DATABASE_NAME = "arkfence.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val TABLE_GEOFENCE = "it_arktechLocation"
+        private const val COL_ID = "id"
         private const val COL_CENTER_ID = "centerId"
         private const val COL_POINT_ORDER = "pointOrder"
         private const val COL_POINT_LAT = "pointLatitude"
@@ -20,7 +21,7 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
     override fun onCreate(db: SQLiteDatabase) {
         val createTable = """
             CREATE TABLE $TABLE_GEOFENCE (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_ID INTEGER PRIMARY KEY,
                 $COL_CENTER_ID INTEGER NOT NULL,
                 $COL_POINT_ORDER INTEGER NOT NULL,
                 $COL_POINT_LAT REAL NOT NULL,
@@ -37,9 +38,11 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
 
     fun insertOrUpdateGeofencePolygon(polygon: GeofencePolygon) {
         val db = writableDatabase
+        // Delete all points for this centerId (they will be re‑inserted with correct server ids)
         db.delete(TABLE_GEOFENCE, "$COL_CENTER_ID = ?", arrayOf(polygon.centerId.toString()))
         for (point in polygon.points) {
             val values = ContentValues().apply {
+                put(COL_ID, point.id)
                 put(COL_CENTER_ID, polygon.centerId)
                 put(COL_POINT_ORDER, point.pointOrder)
                 put(COL_POINT_LAT, point.pointLatitude)
@@ -61,8 +64,9 @@ class DBManager(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, nul
         while (cursor.moveToNext()) {
             points.add(
                 PolygonPoint(
-                    pointOrder     = cursor.getInt(cursor.getColumnIndexOrThrow(COL_POINT_ORDER)),
-                    pointLatitude  = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_POINT_LAT)),
+                    id = cursor.getInt(cursor.getColumnIndexOrThrow(COL_ID)),
+                    pointOrder = cursor.getInt(cursor.getColumnIndexOrThrow(COL_POINT_ORDER)),
+                    pointLatitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_POINT_LAT)),
                     pointLongitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_POINT_LNG))
                 )
             )

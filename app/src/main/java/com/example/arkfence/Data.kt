@@ -49,6 +49,7 @@ data class RingtoneInfo(
 )
 
 data class PolygonPoint(
+    val id: Int,
     val pointOrder: Int,
     val pointLatitude: Double,
     val pointLongitude: Double
