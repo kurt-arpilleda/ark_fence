@@ -21,7 +21,6 @@ import androidx.work.WorkRequest
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
@@ -31,12 +30,14 @@ class GeofenceMonitoringManager private constructor(private val context: Context
         @SuppressLint("StaticFieldLeak")
         @Volatile
         private var INSTANCE: GeofenceMonitoringManager? = null
+
         private const val JOB_ID = 2001
         private const val WORK_NAME = "GeofenceMonitoringWork"
 
         fun getInstance(context: Context): GeofenceMonitoringManager {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: GeofenceMonitoringManager(context.applicationContext).also { INSTANCE = it }
+                INSTANCE ?: GeofenceMonitoringManager(context.applicationContext)
+                    .also { INSTANCE = it }
             }
         }
     }
@@ -48,17 +49,16 @@ class GeofenceMonitoringManager private constructor(private val context: Context
         startGeofenceService()
         scheduleJobScheduler()
         scheduleWorkManager()
-        schedulePeriodicRestart()
     }
 
     fun stopMonitoring() {
         jobScheduler.cancel(JOB_ID)
         workManager.cancelUniqueWork(WORK_NAME)
-        workManager.cancelUniqueWork("${WORK_NAME}_Restart")
         GeofenceService.stop(context)
     }
 
     private fun startGeofenceService() {
+        if (GeofenceServiceUtils.isServiceRunning(context, GeofenceService::class.java)) return
         val intent = Intent(context, GeofenceService::class.java).apply {
             action = GeofenceService.ACTION_START
             putExtra("restart_from_manager", true)
@@ -79,8 +79,8 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             .setRequiresDeviceIdle(false)
             .apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    setMinimumLatency(4 * 60 * 1000L)
-                    setOverrideDeadline(5 * 60 * 1000L)
+                    setMinimumLatency(14 * 60 * 1000L)
+                    setOverrideDeadline(16 * 60 * 1000L)
                 } else {
                     setPeriodic(15 * 60 * 1000L)
                 }
@@ -90,7 +90,6 @@ class GeofenceMonitoringManager private constructor(private val context: Context
                 }
             }
             .build()
-
         jobScheduler.schedule(jobInfo)
     }
 
@@ -108,7 +107,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             5, TimeUnit.MINUTES
         )
             .setConstraints(constraints)
-            .setInitialDelay(1, TimeUnit.MINUTES)
+            .setInitialDelay(2, TimeUnit.MINUTES)
             .setBackoffCriteria(
                 BackoffPolicy.EXPONENTIAL,
                 WorkRequest.MIN_BACKOFF_MILLIS,
@@ -122,47 +121,28 @@ class GeofenceMonitoringManager private constructor(private val context: Context
             workRequest
         )
     }
-
-    private fun schedulePeriodicRestart() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val restartRequest = PeriodicWorkRequestBuilder<GeofenceServiceRestartWorker>(
-            30, TimeUnit.MINUTES,
-            10, TimeUnit.MINUTES
-        )
-            .setConstraints(constraints)
-            .setInitialDelay(5, TimeUnit.MINUTES)
-            .build()
-
-        workManager.enqueueUniquePeriodicWork(
-            "${WORK_NAME}_Restart",
-            ExistingPeriodicWorkPolicy.KEEP,
-            restartRequest
-        )
-    }
 }
 
 object GeofenceServiceUtils {
     fun isServiceRunning(context: Context, serviceClass: Class<*>): Boolean {
         return try {
-            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val services = activityManager.getRunningServices(Integer.MAX_VALUE)
-            services.any { it.service.className == serviceClass.name }
-        } catch (e: Exception) {
-            false
-        }
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.getRunningServices(Integer.MAX_VALUE).any {
+                it.service.className == serviceClass.name
+            }
+        } catch (_: Exception) { false }
     }
 
-    fun getServiceInfo(context: Context, serviceClass: Class<*>): ActivityManager.RunningServiceInfo? {
+    fun getServiceInfo(
+        context: Context,
+        serviceClass: Class<*>
+    ): ActivityManager.RunningServiceInfo? {
         return try {
-            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val services = activityManager.getRunningServices(Integer.MAX_VALUE)
-            services.firstOrNull { it.service.className == serviceClass.name }
-        } catch (e: Exception) {
-            null
-        }
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.getRunningServices(Integer.MAX_VALUE).firstOrNull {
+                it.service.className == serviceClass.name
+            }
+        } catch (_: Exception) { null }
     }
 }
 
@@ -174,8 +154,13 @@ class GeofenceMonitoringJobService : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         scope.launch {
             try {
-                if (!GeofenceServiceUtils.isServiceRunning(this@GeofenceMonitoringJobService, GeofenceService::class.java)) {
-                    val intent = Intent(this@GeofenceMonitoringJobService, GeofenceService::class.java).apply {
+                if (!GeofenceServiceUtils.isServiceRunning(
+                        this@GeofenceMonitoringJobService, GeofenceService::class.java
+                    )
+                ) {
+                    val intent = Intent(
+                        this@GeofenceMonitoringJobService, GeofenceService::class.java
+                    ).apply {
                         action = GeofenceService.ACTION_START
                         putExtra("restart_from_job", true)
                     }
@@ -187,17 +172,19 @@ class GeofenceMonitoringJobService : JobService() {
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    val componentName = ComponentName(this@GeofenceMonitoringJobService, GeofenceMonitoringJobService::class.java)
+                    val componentName = ComponentName(
+                        this@GeofenceMonitoringJobService,
+                        GeofenceMonitoringJobService::class.java
+                    )
                     val jobInfo = JobInfo.Builder(2001, componentName)
                         .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .setMinimumLatency(4 * 60 * 1000L)
-                        .setOverrideDeadline(5 * 60 * 1000L)
+                        .setMinimumLatency(14 * 60 * 1000L)
+                        .setOverrideDeadline(16 * 60 * 1000L)
                         .setPersisted(true)
                         .build()
-                    val jobScheduler = getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
-                    jobScheduler.schedule(jobInfo)
+                    (getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler).schedule(jobInfo)
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
             } finally {
                 jobFinished(params, false)
             }
@@ -205,9 +192,7 @@ class GeofenceMonitoringJobService : JobService() {
         return true
     }
 
-    override fun onStopJob(params: JobParameters?): Boolean {
-        return false
-    }
+    override fun onStopJob(params: JobParameters?): Boolean = false
 }
 
 class GeofenceMonitoringWorker(
@@ -217,9 +202,10 @@ class GeofenceMonitoringWorker(
 
     override suspend fun doWork(): Result {
         return try {
-            val serviceInfo = GeofenceServiceUtils.getServiceInfo(applicationContext, GeofenceService::class.java)
-
-            if (serviceInfo == null) {
+            if (GeofenceServiceUtils.getServiceInfo(
+                    applicationContext, GeofenceService::class.java
+                ) == null
+            ) {
                 val intent = Intent(applicationContext, GeofenceService::class.java).apply {
                     action = GeofenceService.ACTION_START
                     putExtra("restart_from_worker", true)
@@ -231,30 +217,7 @@ class GeofenceMonitoringWorker(
                 }
             }
             Result.success()
-        } catch (e: Exception) {
-            Result.retry()
-        }
-    }
-}
-
-class GeofenceServiceRestartWorker(
-    context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
-
-    override suspend fun doWork(): Result {
-        return try {
-            val restartIntent = Intent(applicationContext, GeofenceService::class.java).apply {
-                action = GeofenceService.ACTION_RESTART
-                putExtra("periodic_restart", true)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                applicationContext.startForegroundService(restartIntent)
-            } else {
-                applicationContext.startService(restartIntent)
-            }
-            Result.success()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             Result.retry()
         }
     }
