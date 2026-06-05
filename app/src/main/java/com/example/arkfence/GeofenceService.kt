@@ -36,6 +36,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -47,9 +49,9 @@ import kotlin.coroutines.resume
 
 class GeofenceService : Service() {
 
-    private val serviceScope = CoroutineScope(Dispatchers.IO)
+    private val supervisorJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.IO + supervisorJob)
     private var trackingJob: Job? = null
-    private var heartbeatJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var alarmManager: AlarmManager
@@ -66,9 +68,11 @@ class GeofenceService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var hasSentAlertForCurrentExit = false
     private var isServiceActive = true
-    private var isTracking = false
     private var isHighAccuracyMode = false
     private var lastPolygonFetchMs: Long = 0L
+
+    private var cachedBatteryPercent: Int = 0
+    private var lastBatteryCheckMs: Long = 0L
 
     companion object {
         private const val CHANNEL_ID = "GeofenceServiceChannel"
@@ -80,15 +84,20 @@ class GeofenceService : Service() {
         private const val POLYGON_REFRESH_INTERVAL_MS = 3_600_000L
         private const val ALARM_INTERVAL_MS = 300_000L
         private const val ALARM_REQUEST_CODE = 7001
-        private const val HEARTBEAT_INTERVAL_MS = 600_000L
         private const val MAX_ACCURACY_METERS = 50f
         private const val MAX_SPEED_MPS = 55.0f
         private const val MAX_LOCATION_AGE_MS = 120_000L
+        private const val BATTERY_CACHE_INTERVAL_MS = 30_000L
+        private const val WAKELOCK_TIMEOUT_MS = 65_000L
 
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
         const val ACTION_RESTART = "ACTION_RESTART_GEOFENCE"
         const val ACTION_ALARM_TICK = "ACTION_GEOFENCE_ALARM_TICK"
+
+        @Volatile
+        var isRunning = false
+            private set
 
         fun start(context: Context) {
             val intent = Intent(context, GeofenceService::class.java).apply {
@@ -108,14 +117,15 @@ class GeofenceService : Service() {
         }
     }
 
-    @SuppressLint("HardwareIds", "WakelockTimeout")
+    @SuppressLint("HardwareIds")
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         isServiceActive = true
 
         deviceId = try {
             Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown-device"
-        } catch (e: Exception) { "unknown-device" }
+        } catch (_: Exception) { "unknown-device" }
 
         dbManager = DBManager(applicationContext)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -133,7 +143,6 @@ class GeofenceService : Service() {
         registerAlarmReceiver()
         startLocationUpdates()
         startTrackingLoop()
-        startHeartbeat()
         scheduleNextAlarm()
     }
 
@@ -144,7 +153,7 @@ class GeofenceService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> {
-                restartTrackingLoop()
+                if (trackingJob?.isActive != true) startTrackingLoop()
                 scheduleNextAlarm()
             }
             ACTION_ALARM_TICK -> {
@@ -165,15 +174,17 @@ class GeofenceService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
         isServiceActive = false
-        stopTrackingLoop()
-        heartbeatJob?.cancel()
-        heartbeatJob = null
+        trackingJob?.cancel()
+        trackingJob = null
+        serviceScope.cancel()
         cancelAlarm()
         stopAlarmSound()
         try { fusedLocationClient.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
         try { unregisterReceiver(alarmTickReceiver) } catch (_: Exception) {}
         releaseWakeLock()
+        wakeLock = null
         GeofenceMonitoringManager.getInstance(applicationContext).startMonitoring()
         super.onDestroy()
     }
@@ -244,7 +255,6 @@ class GeofenceService : Service() {
 
     private fun startTrackingLoop() {
         trackingJob?.cancel()
-        isTracking = true
         val interval = if (isHighAccuracyMode) HIACC_INTERVAL_MS else NORMAL_INTERVAL_MS
 
         trackingJob = serviceScope.launch {
@@ -252,38 +262,19 @@ class GeofenceService : Service() {
                 maybeRefreshPolygon()
                 while (isActive && isServiceActive) {
                     try {
-                        acquireWakeLockBriefly()
                         performInsert()
                     } catch (_: Exception) {}
                     delay(interval)
                 }
             } finally {
-                withContext(NonCancellable) { isTracking = false }
+                withContext(NonCancellable) { }
             }
         }
     }
 
     private fun stopTrackingLoop() {
-        isTracking = false
         trackingJob?.cancel()
         trackingJob = null
-    }
-
-    private fun restartTrackingLoop() {
-        stopTrackingLoop()
-        startTrackingLoop()
-    }
-
-    private fun startHeartbeat() {
-        heartbeatJob?.cancel()
-        heartbeatJob = serviceScope.launch {
-            while (isActive && isServiceActive) {
-                try {
-                    delay(HEARTBEAT_INTERVAL_MS)
-                    if (!isTracking) startTrackingLoop()
-                } catch (_: Exception) {}
-            }
-        }
     }
 
     private suspend fun maybeRefreshPolygon() {
@@ -347,21 +338,23 @@ class GeofenceService : Service() {
         if (isHighAccuracyMode) return
         isHighAccuracyMode = true
         startLocationUpdates()
-        restartTrackingLoop()
-        wakeLock?.acquire(5 * 60 * 1000L)
+        stopTrackingLoop()
+        startTrackingLoop()
+        wakeLock?.let { if (!it.isHeld) it.acquire(5 * 60 * 1000L) }
     }
 
     private fun switchToNormalMode() {
         if (!isHighAccuracyMode) return
         isHighAccuracyMode = false
         startLocationUpdates()
-        restartTrackingLoop()
+        stopTrackingLoop()
+        startTrackingLoop()
         releaseWakeLock()
     }
 
     @SuppressLint("MissingPermission")
     private fun performInsert() {
-        val batteryPercent = getBatteryPercent()
+        val batteryPercent = getCachedBatteryPercent()
         val isLocationOn = if (isLocationEnabled()) 1 else 0
         val lat = lastLatitude
         val lng = lastLongitude
@@ -372,8 +365,7 @@ class GeofenceService : Service() {
         }
 
         try {
-            val lastKnown = fusedLocationClient.lastLocation
-            lastKnown.addOnSuccessListener { location ->
+            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                 if (location != null && isLocationValid(location)) {
                     lastValidLocation = location
                     lastLatitude = location.latitude
@@ -456,7 +448,11 @@ class GeofenceService : Service() {
 
     private fun stopAlarmSound() {
         try {
-            mediaPlayer?.apply { if (isPlaying) stop(); reset(); release() }
+            mediaPlayer?.apply {
+                if (isPlaying) stop()
+                reset()
+                release()
+            }
             mediaPlayer = null
         } catch (_: Exception) {}
     }
@@ -504,16 +500,20 @@ class GeofenceService : Service() {
         alarmPendingIntent?.let { alarmManager.cancel(it); alarmPendingIntent = null }
     }
 
-    private fun acquireWakeLockBriefly() {
-        try {
-            wakeLock?.let { wl ->
-                if (!wl.isHeld) wl.acquire(70_000L)
-            }
-        } catch (_: Exception) {}
-    }
-
     private fun releaseWakeLock() {
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+    }
+
+    private fun getCachedBatteryPercent(): Int {
+        val now = System.currentTimeMillis()
+        if (now - lastBatteryCheckMs > BATTERY_CACHE_INTERVAL_MS) {
+            val bIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            cachedBatteryPercent = if (level != -1 && scale != -1) (level * 100 / scale) else 0
+            lastBatteryCheckMs = now
+        }
+        return cachedBatteryPercent
     }
 
     private fun isLocationFresh(location: Location): Boolean {
@@ -552,13 +552,6 @@ class GeofenceService : Service() {
             j = i
         }
         return inside
-    }
-
-    private fun getBatteryPercent(): Int {
-        val bIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        return if (level != -1 && scale != -1) (level * 100 / scale) else 0
     }
 
     private fun isLocationEnabled(): Boolean {
