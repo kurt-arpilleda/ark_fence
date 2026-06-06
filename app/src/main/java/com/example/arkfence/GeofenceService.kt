@@ -56,6 +56,7 @@ class GeofenceService : Service() {
     private var trackingJob: Job? = null
     private var heartbeatJob: Job? = null
     private var periodicRestartJob: Job? = null
+    private var volumeEnforcerJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var alarmManager: AlarmManager
@@ -68,12 +69,17 @@ class GeofenceService : Service() {
     private var lastLatitude: Double? = null
     private var lastLongitude: Double? = null
 
+    private val locationBuffer = ArrayDeque<Location>(LOCATION_BUFFER_SIZE)
+    private var pendingSuspectLocation: Location? = null
+    private var consecutiveSuspectCount = 0
+
     private var geofencePolygon: GeofencePolygon? = null
     private var isOutsideGeofence = false
     private var mediaPlayer: MediaPlayer? = null
     private var hasSentAlertForCurrentExit = false
     private var isServiceActive = true
     private var isTracking = false
+    private var isAlarmPlaying = false
 
     companion object {
         private const val TAG = "GeofenceService"
@@ -85,11 +91,18 @@ class GeofenceService : Service() {
         private const val RESTART_INTERVAL_MS = 600_000L
         private const val ALARM_REQUEST_CODE = 7001
         private const val HEARTBEAT_REQUEST_CODE = 7002
+        private const val VOLUME_ENFORCE_INTERVAL_MS = 500L
 
         private const val MAX_ACCURACY_METERS = 50f
         private const val MAX_SPEED_MPS = 55.0f
         private const val MAX_LOCATION_AGE_MS = 120_000L
         private const val MIN_DISPLACEMENT_METERS = 0f
+
+        private const val LOCATION_BUFFER_SIZE = 5
+        private const val GLITCH_SPEED_THRESHOLD_MPS = 35.0
+        private const val GLITCH_MIN_DISTANCE_METERS = 50.0
+        private const val GLITCH_MAX_ACCURACY_RATIO = 3.0f
+        private const val GLITCH_CONFIRM_COUNT = 2
 
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
@@ -124,6 +137,16 @@ class GeofenceService : Service() {
             } else {
                 context.startService(intent)
             }
+        }
+
+        private fun haversineDistance(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+            val r = 6_371_000.0
+            val dLat = Math.toRadians(lat2 - lat1)
+            val dLng = Math.toRadians(lng2 - lng1)
+            val a = sin(dLat / 2).pow(2) +
+                    cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLng / 2).pow(2)
+            val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+            return r * c
         }
     }
 
@@ -216,6 +239,91 @@ class GeofenceService : Service() {
             }
         }
         return true
+    }
+
+    private fun isGlitchLocation(candidate: Location, reference: Location): Boolean {
+        val distanceMeters = haversineDistance(
+            reference.latitude, reference.longitude,
+            candidate.latitude, candidate.longitude
+        )
+        if (distanceMeters < GLITCH_MIN_DISTANCE_METERS) return false
+
+        val timeDeltaSec = (candidate.time - reference.time) / 1000.0
+        if (timeDeltaSec <= 0) return true
+
+        val impliedSpeedMps = distanceMeters / timeDeltaSec
+        if (impliedSpeedMps > GLITCH_SPEED_THRESHOLD_MPS) return true
+
+        if (candidate.hasAccuracy() && reference.hasAccuracy()) {
+            val accuracyRatio = candidate.accuracy / reference.accuracy.coerceAtLeast(1f)
+            if (accuracyRatio > GLITCH_MAX_ACCURACY_RATIO && distanceMeters > 100.0) return true
+        }
+
+        return false
+    }
+
+    private fun getBufferAnchor(): Location? {
+        if (locationBuffer.isEmpty()) return lastValidLocation
+        val lats = locationBuffer.map { it.latitude }
+        val lngs = locationBuffer.map { it.longitude }
+        val sorted = lats.sorted()
+        val medianLat = sorted[sorted.size / 2]
+        val sortedLng = lngs.sorted()
+        val medianLng = sortedLng[sortedLng.size / 2]
+        val synthetic = Location("buffer_median")
+        synthetic.latitude = medianLat
+        synthetic.longitude = medianLng
+        synthetic.time = locationBuffer.last().time
+        synthetic.accuracy = locationBuffer.map { it.accuracy }.average().toFloat()
+        return synthetic
+    }
+
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
+    private fun processAntiGlitchLocation(newLocation: Location) {
+        val anchor = getBufferAnchor()
+
+        if (anchor == null) {
+            acceptLocation(newLocation)
+            return
+        }
+
+        val suspect = isGlitchLocation(newLocation, anchor)
+
+        if (!suspect) {
+            pendingSuspectLocation = null
+            consecutiveSuspectCount = 0
+            acceptLocation(newLocation)
+            return
+        }
+
+        val prev = pendingSuspectLocation
+        if (prev != null && !isGlitchLocation(newLocation, prev)) {
+            consecutiveSuspectCount++
+        } else {
+            consecutiveSuspectCount = 1
+            pendingSuspectLocation = newLocation
+            return
+        }
+
+        if (consecutiveSuspectCount >= GLITCH_CONFIRM_COUNT) {
+            pendingSuspectLocation = null
+            consecutiveSuspectCount = 0
+            acceptLocation(newLocation)
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
+    private fun acceptLocation(location: Location) {
+        lastValidLocation = location
+        lastLatitude = location.latitude
+        lastLongitude = location.longitude
+
+        if (locationBuffer.size >= LOCATION_BUFFER_SIZE) {
+            locationBuffer.removeFirst()
+        }
+        locationBuffer.addLast(location)
+
+        checkGeofence(location.latitude, location.longitude)
     }
 
     private fun isPointInPolygon(lat: Double, lng: Double, polygon: GeofencePolygon): Boolean {
@@ -332,11 +440,16 @@ class GeofenceService : Service() {
                 prepare()
                 start()
             }
+
+            isAlarmPlaying = true
+            startVolumeEnforcer()
         } catch (e: Exception) {
         }
     }
 
     private fun stopAlarmSound() {
+        isAlarmPlaying = false
+        stopVolumeEnforcer()
         try {
             mediaPlayer?.apply {
                 if (isPlaying) stop()
@@ -346,6 +459,29 @@ class GeofenceService : Service() {
             mediaPlayer = null
         } catch (e: Exception) {
         }
+    }
+
+    private fun startVolumeEnforcer() {
+        volumeEnforcerJob?.cancel()
+        volumeEnforcerJob = serviceScope.launch {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            while (isActive && isAlarmPlaying) {
+                try {
+                    val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                    if (currentVolume < maxVolume) {
+                        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
+                    }
+                } catch (e: Exception) {
+                }
+                delay(VOLUME_ENFORCE_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopVolumeEnforcer() {
+        volumeEnforcerJob?.cancel()
+        volumeEnforcerJob = null
     }
 
     @SuppressLint("MissingPermission")
@@ -375,10 +511,7 @@ class GeofenceService : Service() {
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
             if (!isLocationValid(location)) return
-            lastValidLocation = location
-            lastLatitude = location.latitude
-            lastLongitude = location.longitude
-            checkGeofence(location.latitude, location.longitude)
+            processAntiGlitchLocation(location)
         }
     }
 
@@ -498,11 +631,12 @@ class GeofenceService : Service() {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 lastKnown.addOnSuccessListener { location ->
                     if (location != null && isLocationValid(location)) {
-                        lastValidLocation = location
-                        lastLatitude = location.latitude
-                        lastLongitude = location.longitude
-                        checkGeofence(location.latitude, location.longitude)
-                        sendToServer(location.latitude.toString(), location.longitude.toString(), batteryPercent, isLocationOn)
+                        processAntiGlitchLocation(location)
+                        val resolvedLat = lastLatitude
+                        val resolvedLng = lastLongitude
+                        if (resolvedLat != null && resolvedLng != null) {
+                            sendToServer(resolvedLat.toString(), resolvedLng.toString(), batteryPercent, isLocationOn)
+                        }
                     }
                     if (continuation.isActive) continuation.resume(Unit)
                 }
