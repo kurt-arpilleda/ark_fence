@@ -465,11 +465,13 @@ class Dashboard : ComponentActivity() {
     }
 
     private fun checkForUpdates() {
+        RetrofitClient.onNetworkConnectivityChanged()
         if (NetworkUtils.isNetworkAvailable(this)) appUpdateService.checkForAppUpdate()
     }
 
     inner class ConnectivityReceiver(private val onNetworkAvailable: () -> Unit) : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            RetrofitClient.onNetworkConnectivityChanged()
             if (NetworkUtils.isNetworkAvailable(context)) onNetworkAvailable()
         }
     }

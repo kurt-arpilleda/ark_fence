@@ -21,7 +21,6 @@ import androidx.work.WorkRequest
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
@@ -96,7 +95,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
 
     private fun scheduleWorkManager() {
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
             .setRequiresBatteryNotLow(false)
             .setRequiresCharging(false)
             .setRequiresDeviceIdle(false)
@@ -125,7 +124,7 @@ class GeofenceMonitoringManager private constructor(private val context: Context
 
     private fun schedulePeriodicRestart() {
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
             .build()
 
         val restartRequest = PeriodicWorkRequestBuilder<GeofenceServiceRestartWorker>(
@@ -218,7 +217,6 @@ class GeofenceMonitoringWorker(
     override suspend fun doWork(): Result {
         return try {
             val serviceInfo = GeofenceServiceUtils.getServiceInfo(applicationContext, GeofenceService::class.java)
-
             if (serviceInfo == null) {
                 val intent = Intent(applicationContext, GeofenceService::class.java).apply {
                     action = GeofenceService.ACTION_START

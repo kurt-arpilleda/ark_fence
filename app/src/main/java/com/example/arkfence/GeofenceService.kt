@@ -172,6 +172,8 @@ class GeofenceService : Service() {
         ).apply { setReferenceCounted(false) }
         if (wakeLock?.isHeld != true) wakeLock?.acquire()
 
+        loadGeofenceFromLocalDB()
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
@@ -345,6 +347,7 @@ class GeofenceService : Service() {
     }
 
     private fun fetchGeofencePolygon(onComplete: (() -> Unit)? = null) {
+        if (geofencePolygon == null) loadGeofenceFromLocalDB()
         RetrofitClient.instance.getGeofenceRadius().enqueue(object : Callback<GeofenceRadiusResponse> {
             override fun onResponse(call: Call<GeofenceRadiusResponse>, response: Response<GeofenceRadiusResponse>) {
                 if (response.isSuccessful && response.body()?.success == true) {
@@ -352,14 +355,16 @@ class GeofenceService : Service() {
                     if (newPolygon != null) {
                         dbManager.insertOrUpdateGeofencePolygon(newPolygon)
                         geofencePolygon = newPolygon
+                    } else {
+                        if (geofencePolygon == null) loadGeofenceFromLocalDB()
                     }
                 } else {
-                    loadGeofenceFromLocalDB()
+                    if (geofencePolygon == null) loadGeofenceFromLocalDB()
                 }
                 onComplete?.invoke()
             }
             override fun onFailure(call: Call<GeofenceRadiusResponse>, t: Throwable) {
-                loadGeofenceFromLocalDB()
+                if (geofencePolygon == null) loadGeofenceFromLocalDB()
                 onComplete?.invoke()
             }
         })
