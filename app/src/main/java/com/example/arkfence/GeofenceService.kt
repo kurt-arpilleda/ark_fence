@@ -81,6 +81,27 @@ class GeofenceService : Service() {
     private var isTracking = false
     private var isAlarmPlaying = false
 
+    // Preference keys used to persist geofence exit state across service restarts.
+    // Without this, every restart resets isOutsideGeofence=false and hasSentAlertForCurrentExit=false,
+    // so the very next checkGeofence fires a duplicate alert for users who were already outside.
+    private val PREFS_NAME = "GeofenceServicePrefs"
+    private val PREF_IS_OUTSIDE = "is_outside_geofence"
+    private val PREF_ALERT_SENT = "has_sent_alert_for_exit"
+
+    private fun saveGeofenceState() {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply {
+            putBoolean(PREF_IS_OUTSIDE, isOutsideGeofence)
+            putBoolean(PREF_ALERT_SENT, hasSentAlertForCurrentExit)
+            apply()
+        }
+    }
+
+    private fun restoreGeofenceState() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        isOutsideGeofence = prefs.getBoolean(PREF_IS_OUTSIDE, false)
+        hasSentAlertForCurrentExit = prefs.getBoolean(PREF_ALERT_SENT, false)
+    }
+
     companion object {
         private const val TAG = "GeofenceService"
         private const val CHANNEL_ID = "GeofenceServiceChannel"
@@ -164,6 +185,11 @@ class GeofenceService : Service() {
         dbManager = DBManager(applicationContext)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+
+        // Restore persisted geofence exit state so a service restart doesn't
+        // reset isOutsideGeofence to false and fire a duplicate alert on the
+        // first location fix after the restart.
+        restoreGeofenceState()
 
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
@@ -331,19 +357,25 @@ class GeofenceService : Service() {
     private fun isPointInPolygon(lat: Double, lng: Double, polygon: GeofencePolygon): Boolean {
         val points = polygon.points
         if (points.size < 3) return false
-        var inside = false
-        var j = points.size - 1
-        for (i in points.indices) {
-            val xi = points[i].pointLongitude
-            val yi = points[i].pointLatitude
-            val xj = points[j].pointLongitude
-            val yj = points[j].pointLatitude
-            val intersect = ((yi > lat) != (yj > lat)) &&
-                    (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)
-            if (intersect) inside = !inside
-            j = i
+        // Ray-casting algorithm — identical winding convention to GoogleMapView.isPointInPolygon
+        // Uses (y1 <= y < y2) || (y2 <= y < y1) half-open intervals to avoid double-counting
+        // shared vertices and to correctly handle points on horizontal edges.
+        var intersectCount = 0
+        val n = points.size
+        for (i in 0 until n) {
+            val p1 = points[i]
+            val p2 = points[(i + 1) % n]
+            val x1 = p1.pointLongitude
+            val y1 = p1.pointLatitude
+            val x2 = p2.pointLongitude
+            val y2 = p2.pointLatitude
+            if (((y1 <= lat && lat < y2) || (y2 <= lat && lat < y1)) &&
+                (lng < (x2 - x1) * (lat - y1) / (y2 - y1) + x1)
+            ) {
+                intersectCount++
+            }
         }
-        return inside
+        return (intersectCount % 2) != 0
     }
 
     private fun fetchGeofencePolygon(onComplete: (() -> Unit)? = null) {
@@ -385,11 +417,13 @@ class GeofenceService : Service() {
         if (outside && !isOutsideGeofence) {
             isOutsideGeofence = true
             hasSentAlertForCurrentExit = false
+            saveGeofenceState()   // persist before firing alert so a crash/restart won't re-fire
             triggerAlarm()
             sendGeofenceAlert()
         } else if (!outside && isOutsideGeofence) {
             isOutsideGeofence = false
             hasSentAlertForCurrentExit = false
+            saveGeofenceState()   // persist the "back inside" state
             stopAlarm()
         }
     }
@@ -626,7 +660,11 @@ class GeofenceService : Service() {
         val lng = lastLongitude
 
         if (lat != null && lng != null) {
-            checkGeofence(lat, lng)
+            // Bug fix: do NOT call checkGeofence here.
+            // checkGeofence is already called inside acceptLocation() which is triggered
+            // by every location callback update. Calling it again here with the same
+            // coordinates causes the outside/inside state machine to flip twice per tick,
+            // producing false alerts for users who are actually inside the polygon.
             sendToServer(lat.toString(), lng.toString(), batteryPercent, isLocationOn)
             return
         }
@@ -636,6 +674,7 @@ class GeofenceService : Service() {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 lastKnown.addOnSuccessListener { location ->
                     if (location != null && isLocationValid(location)) {
+                        // processAntiGlitchLocation already calls acceptLocation -> checkGeofence
                         processAntiGlitchLocation(location)
                         val resolvedLat = lastLatitude
                         val resolvedLng = lastLongitude
