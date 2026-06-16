@@ -16,6 +16,8 @@ import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -43,6 +45,8 @@ import kotlinx.coroutines.withContext
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
+import java.net.InetSocketAddress
+import java.net.Socket
 import kotlin.coroutines.resume
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -81,9 +85,9 @@ class GeofenceService : Service() {
     private var isTracking = false
     private var isAlarmPlaying = false
 
-    // Preference keys used to persist geofence exit state across service restarts.
-    // Without this, every restart resets isOutsideGeofence=false and hasSentAlertForCurrentExit=false,
-    // so the very next checkGeofence fires a duplicate alert for users who were already outside.
+    private var consecutiveOutsideCount = 0
+    private var consecutiveInsideCount = 0
+
     private val PREFS_NAME = "GeofenceServicePrefs"
     private val PREF_IS_OUTSIDE = "is_outside_geofence"
     private val PREF_ALERT_SENT = "has_sent_alert_for_exit"
@@ -114,7 +118,8 @@ class GeofenceService : Service() {
         private const val HEARTBEAT_REQUEST_CODE = 7002
         private const val VOLUME_ENFORCE_INTERVAL_MS = 500L
 
-        private const val MAX_ACCURACY_METERS = 50f
+        private const val MAX_ACCURACY_METERS_GPS = 25f
+        private const val MAX_ACCURACY_METERS_NETWORK = 20f
         private const val MAX_SPEED_MPS = 55.0f
         private const val MAX_LOCATION_AGE_MS = 120_000L
         private const val MIN_DISPLACEMENT_METERS = 0f
@@ -124,6 +129,9 @@ class GeofenceService : Service() {
         private const val GLITCH_MIN_DISTANCE_METERS = 50.0
         private const val GLITCH_MAX_ACCURACY_RATIO = 3.0f
         private const val GLITCH_CONFIRM_COUNT = 2
+
+        private const val REQUIRED_OUTSIDE_CONFIRMATIONS = 3
+        private const val REQUIRED_INSIDE_CONFIRMATIONS = 2
 
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
@@ -171,6 +179,37 @@ class GeofenceService : Service() {
         }
     }
 
+    private fun isWifiConnectedWithoutInternet(): Boolean {
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val isOnWifi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val network = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(network) ?: return false
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            } else {
+                @Suppress("DEPRECATION")
+                cm.activeNetworkInfo?.type == ConnectivityManager.TYPE_WIFI
+            }
+            if (!isOnWifi) return false
+            val hasInternet = try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress("8.8.8.8", 53), 1500)
+                    true
+                }
+            } catch (e: Exception) {
+                false
+            }
+            !hasInternet
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun isLocationFromGps(location: Location): Boolean {
+        return location.provider == LocationManager.GPS_PROVIDER ||
+                location.provider == "gps"
+    }
+
     @SuppressLint("HardwareIds", "WakelockTimeout")
     override fun onCreate() {
         super.onCreate()
@@ -186,9 +225,6 @@ class GeofenceService : Service() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
-        // Restore persisted geofence exit state so a service restart doesn't
-        // reset isOutsideGeofence to false and fire a duplicate alert on the
-        // first location fix after the restart.
         restoreGeofenceState()
 
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
@@ -249,21 +285,26 @@ class GeofenceService : Service() {
     }
 
     private fun isLocationValid(newLocation: Location): Boolean {
-        if (!newLocation.hasAccuracy() || newLocation.accuracy > MAX_ACCURACY_METERS) {
-            return false
+        if (!newLocation.hasAccuracy()) return false
+
+        val wifiNoInternet = isWifiConnectedWithoutInternet()
+
+        if (wifiNoInternet) {
+            if (!isLocationFromGps(newLocation)) return false
+            if (newLocation.accuracy > MAX_ACCURACY_METERS_GPS) return false
+        } else {
+            if (newLocation.accuracy > MAX_ACCURACY_METERS_NETWORK) return false
         }
-        if (!isLocationFresh(newLocation)) {
-            return false
-        }
+
+        if (!isLocationFresh(newLocation)) return false
+
         val previous = lastValidLocation
         if (previous != null) {
             val distance = previous.distanceTo(newLocation)
             val timeDeltaSec = (newLocation.time - previous.time) / 1000f
             if (timeDeltaSec > 0) {
                 val speedMps = distance / timeDeltaSec
-                if (speedMps > MAX_SPEED_MPS) {
-                    return false
-                }
+                if (speedMps > MAX_SPEED_MPS) return false
             }
         }
         return true
@@ -357,9 +398,6 @@ class GeofenceService : Service() {
     private fun isPointInPolygon(lat: Double, lng: Double, polygon: GeofencePolygon): Boolean {
         val points = polygon.points
         if (points.size < 3) return false
-        // Ray-casting algorithm — identical winding convention to GoogleMapView.isPointInPolygon
-        // Uses (y1 <= y < y2) || (y2 <= y < y1) half-open intervals to avoid double-counting
-        // shared vertices and to correctly handle points on horizontal edges.
         var intersectCount = 0
         val n = points.size
         for (i in 0 until n) {
@@ -412,18 +450,28 @@ class GeofenceService : Service() {
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun checkGeofence(lat: Double, lng: Double) {
         val polygon = geofencePolygon ?: return
-        val outside = !isPointInPolygon(lat, lng, polygon)
+        val rawOutside = !isPointInPolygon(lat, lng, polygon)
 
-        if (outside && !isOutsideGeofence) {
+        if (rawOutside) {
+            consecutiveOutsideCount++
+            consecutiveInsideCount = 0
+        } else {
+            consecutiveInsideCount++
+            consecutiveOutsideCount = 0
+        }
+
+        if (!isOutsideGeofence && consecutiveOutsideCount >= REQUIRED_OUTSIDE_CONFIRMATIONS) {
+            consecutiveOutsideCount = 0
             isOutsideGeofence = true
             hasSentAlertForCurrentExit = false
-            saveGeofenceState()   // persist before firing alert so a crash/restart won't re-fire
+            saveGeofenceState()
             triggerAlarm()
             sendGeofenceAlert()
-        } else if (!outside && isOutsideGeofence) {
+        } else if (isOutsideGeofence && consecutiveInsideCount >= REQUIRED_INSIDE_CONFIRMATIONS) {
+            consecutiveInsideCount = 0
             isOutsideGeofence = false
             hasSentAlertForCurrentExit = false
-            saveGeofenceState()   // persist the "back inside" state
+            saveGeofenceState()
             stopAlarm()
         }
     }
@@ -526,14 +574,19 @@ class GeofenceService : Service() {
     @SuppressLint("MissingPermission")
     private fun startLocationUpdates() {
         try {
-            val locationRequest = LocationRequest.Builder(
-                Priority.PRIORITY_HIGH_ACCURACY,
-                30_000L
-            )
-                .setMinUpdateIntervalMillis(15_000L)
-                .setMaxUpdateDelayMillis(45_000L)
+            val wifiNoInternet = isWifiConnectedWithoutInternet()
+            val priority = if (wifiNoInternet) {
+                Priority.PRIORITY_HIGH_ACCURACY
+            } else {
+                Priority.PRIORITY_HIGH_ACCURACY
+            }
+
+            val locationRequest = LocationRequest.Builder(priority, 20_000L)
+                .setMinUpdateIntervalMillis(10_000L)
+                .setMaxUpdateDelayMillis(30_000L)
                 .setMinUpdateDistanceMeters(MIN_DISPLACEMENT_METERS)
                 .setWaitForAccurateLocation(true)
+                .setGranularity(com.google.android.gms.location.Granularity.GRANULARITY_FINE)
                 .build()
 
             fusedLocationClient.requestLocationUpdates(
@@ -548,9 +601,21 @@ class GeofenceService : Service() {
     private val locationCallback = object : LocationCallback() {
         @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
         override fun onLocationResult(result: LocationResult) {
-            val location = result.lastLocation ?: return
-            if (!isLocationValid(location)) return
-            processAntiGlitchLocation(location)
+            val locations = result.locations
+            if (locations.isEmpty()) return
+
+            val wifiNoInternet = isWifiConnectedWithoutInternet()
+
+            val best = if (wifiNoInternet) {
+                locations.filter { isLocationFromGps(it) && it.hasAccuracy() && it.accuracy <= MAX_ACCURACY_METERS_GPS }
+                    .minByOrNull { it.accuracy }
+            } else {
+                locations.filter { it.hasAccuracy() && it.accuracy <= MAX_ACCURACY_METERS_NETWORK }
+                    .minByOrNull { it.accuracy }
+            } ?: return
+
+            if (!isLocationValid(best)) return
+            processAntiGlitchLocation(best)
         }
     }
 
@@ -660,11 +725,6 @@ class GeofenceService : Service() {
         val lng = lastLongitude
 
         if (lat != null && lng != null) {
-            // Bug fix: do NOT call checkGeofence here.
-            // checkGeofence is already called inside acceptLocation() which is triggered
-            // by every location callback update. Calling it again here with the same
-            // coordinates causes the outside/inside state machine to flip twice per tick,
-            // producing false alerts for users who are actually inside the polygon.
             sendToServer(lat.toString(), lng.toString(), batteryPercent, isLocationOn)
             return
         }
@@ -674,7 +734,6 @@ class GeofenceService : Service() {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 lastKnown.addOnSuccessListener { location ->
                     if (location != null && isLocationValid(location)) {
-                        // processAntiGlitchLocation already calls acceptLocation -> checkGeofence
                         processAntiGlitchLocation(location)
                         val resolvedLat = lastLatitude
                         val resolvedLng = lastLongitude
