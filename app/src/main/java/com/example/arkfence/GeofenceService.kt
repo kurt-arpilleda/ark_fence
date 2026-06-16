@@ -81,9 +81,6 @@ class GeofenceService : Service() {
     private var isTracking = false
     private var isAlarmPlaying = false
 
-    // Preference keys used to persist geofence exit state across service restarts.
-    // Without this, every restart resets isOutsideGeofence=false and hasSentAlertForCurrentExit=false,
-    // so the very next checkGeofence fires a duplicate alert for users who were already outside.
     private val PREFS_NAME = "GeofenceServicePrefs"
     private val PREF_IS_OUTSIDE = "is_outside_geofence"
     private val PREF_ALERT_SENT = "has_sent_alert_for_exit"
@@ -114,7 +111,13 @@ class GeofenceService : Service() {
         private const val HEARTBEAT_REQUEST_CODE = 7002
         private const val VOLUME_ENFORCE_INTERVAL_MS = 500L
 
-        private const val MAX_ACCURACY_METERS = 50f
+        // FIX 1: Raised from 50f to 100f so that indoor GPS readings (which
+        // typically report 60–120 m accuracy) are not silently rejected.
+        // When accuracy is poor the previous valid location is reused, which
+        // is far safer than falling back to a stale lastLocation that may
+        // have drifted outside the polygon.
+        private const val MAX_ACCURACY_METERS = 100f
+
         private const val MAX_SPEED_MPS = 55.0f
         private const val MAX_LOCATION_AGE_MS = 120_000L
         private const val MIN_DISPLACEMENT_METERS = 0f
@@ -124,6 +127,11 @@ class GeofenceService : Service() {
         private const val GLITCH_MIN_DISTANCE_METERS = 50.0
         private const val GLITCH_MAX_ACCURACY_RATIO = 3.0f
         private const val GLITCH_CONFIRM_COUNT = 2
+
+        // FIX 2: Require N consecutive "outside" readings before treating the
+        // device as truly outside. A single bad GPS fix indoors will no longer
+        // trigger the alarm.
+        private const val OUTSIDE_CONFIRM_COUNT = 3
 
         const val ACTION_START = "ACTION_START_GEOFENCE"
         const val ACTION_STOP = "ACTION_STOP_GEOFENCE"
@@ -171,6 +179,12 @@ class GeofenceService : Service() {
         }
     }
 
+    // FIX 2: Counter tracking consecutive outside readings
+    private var consecutiveOutsideCount = 0
+    // FIX 2: Counter tracking consecutive inside readings (to confirm re-entry)
+    private var consecutiveInsideCount = 0
+    private val INSIDE_CONFIRM_COUNT = 2
+
     @SuppressLint("HardwareIds", "WakelockTimeout")
     override fun onCreate() {
         super.onCreate()
@@ -186,9 +200,6 @@ class GeofenceService : Service() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
-        // Restore persisted geofence exit state so a service restart doesn't
-        // reset isOutsideGeofence to false and fire a duplicate alert on the
-        // first location fix after the restart.
         restoreGeofenceState()
 
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
@@ -198,12 +209,24 @@ class GeofenceService : Service() {
         ).apply { setReferenceCounted(false) }
         if (wakeLock?.isHeld != true) wakeLock?.acquire()
 
+        // FIX 3: Always load the polygon from local DB first.
+        // This ensures the polygon is always available even when there is no
+        // WiFi/network (company-only network). The network fetch then updates
+        // it in the background if reachable.
         loadGeofenceFromLocalDB()
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
         registerAlarmReceiver()
+
+        // FIX 4: Removed setWaitForAccurateLocation(true).
+        // On a company-only WiFi network without internet, the fused provider
+        // cannot obtain assisted GPS fixes quickly. setWaitForAccurateLocation
+        // causes Android to hold back ALL location updates until a high-accuracy
+        // fix is ready, which can take minutes. During that delay the service
+        // has no location data and any previously-cached stale location (which
+        // may lie outside the polygon) gets used, causing false alarms.
         startLocationUpdates()
         startTrackingLoop()
         startHeartbeat()
@@ -357,9 +380,6 @@ class GeofenceService : Service() {
     private fun isPointInPolygon(lat: Double, lng: Double, polygon: GeofencePolygon): Boolean {
         val points = polygon.points
         if (points.size < 3) return false
-        // Ray-casting algorithm — identical winding convention to GoogleMapView.isPointInPolygon
-        // Uses (y1 <= y < y2) || (y2 <= y < y1) half-open intervals to avoid double-counting
-        // shared vertices and to correctly handle points on horizontal edges.
         var intersectCount = 0
         val n = points.size
         for (i in 0 until n) {
@@ -379,7 +399,10 @@ class GeofenceService : Service() {
     }
 
     private fun fetchGeofencePolygon(onComplete: (() -> Unit)? = null) {
+        // Always start with whatever is in local DB so we never end up with
+        // a null polygon just because the network request failed.
         if (geofencePolygon == null) loadGeofenceFromLocalDB()
+
         RetrofitClient.instance.getGeofenceRadius().enqueue(object : Callback<GeofenceRadiusResponse> {
             override fun onResponse(call: Call<GeofenceRadiusResponse>, response: Response<GeofenceRadiusResponse>) {
                 if (response.isSuccessful && response.body()?.success == true) {
@@ -391,11 +414,15 @@ class GeofenceService : Service() {
                         if (geofencePolygon == null) loadGeofenceFromLocalDB()
                     }
                 } else {
+                    // FIX 5: Network failed (no WiFi / server unreachable).
+                    // Do NOT clear geofencePolygon — keep using the last known
+                    // polygon from local DB so the geofence check keeps working.
                     if (geofencePolygon == null) loadGeofenceFromLocalDB()
                 }
                 onComplete?.invoke()
             }
             override fun onFailure(call: Call<GeofenceRadiusResponse>, t: Throwable) {
+                // Same: network failure must not nullify the polygon.
                 if (geofencePolygon == null) loadGeofenceFromLocalDB()
                 onComplete?.invoke()
             }
@@ -409,21 +436,35 @@ class GeofenceService : Service() {
         }
     }
 
+    // FIX 2: checkGeofence now requires OUTSIDE_CONFIRM_COUNT consecutive
+    // outside readings before sounding the alarm, and INSIDE_CONFIRM_COUNT
+    // consecutive inside readings before silencing it. A single drifting GPS
+    // fix indoors will no longer produce a false alarm.
     @RequiresPermission(Manifest.permission.USE_FULL_SCREEN_INTENT)
     private fun checkGeofence(lat: Double, lng: Double) {
         val polygon = geofencePolygon ?: return
-        val outside = !isPointInPolygon(lat, lng, polygon)
+        val currentlyOutside = !isPointInPolygon(lat, lng, polygon)
 
-        if (outside && !isOutsideGeofence) {
+        if (currentlyOutside) {
+            consecutiveOutsideCount++
+            consecutiveInsideCount = 0
+        } else {
+            consecutiveInsideCount++
+            consecutiveOutsideCount = 0
+        }
+
+        if (!isOutsideGeofence && consecutiveOutsideCount >= OUTSIDE_CONFIRM_COUNT) {
             isOutsideGeofence = true
             hasSentAlertForCurrentExit = false
-            saveGeofenceState()   // persist before firing alert so a crash/restart won't re-fire
+            consecutiveOutsideCount = 0
+            saveGeofenceState()
             triggerAlarm()
             sendGeofenceAlert()
-        } else if (!outside && isOutsideGeofence) {
+        } else if (isOutsideGeofence && consecutiveInsideCount >= INSIDE_CONFIRM_COUNT) {
             isOutsideGeofence = false
             hasSentAlertForCurrentExit = false
-            saveGeofenceState()   // persist the "back inside" state
+            consecutiveInsideCount = 0
+            saveGeofenceState()
             stopAlarm()
         }
     }
@@ -533,7 +574,12 @@ class GeofenceService : Service() {
                 .setMinUpdateIntervalMillis(15_000L)
                 .setMaxUpdateDelayMillis(45_000L)
                 .setMinUpdateDistanceMeters(MIN_DISPLACEMENT_METERS)
-                .setWaitForAccurateLocation(true)
+                // FIX 4: Do NOT set setWaitForAccurateLocation(true).
+                // On a private company network with no internet, the fused
+                // provider cannot quickly get network-assisted high-accuracy
+                // fixes. Waiting for them starves the service of location data
+                // entirely for long periods, causing the stale lastLocation
+                // (which may be outside the polygon) to be used instead.
                 .build()
 
             fusedLocationClient.requestLocationUpdates(
@@ -660,27 +706,21 @@ class GeofenceService : Service() {
         val lng = lastLongitude
 
         if (lat != null && lng != null) {
-            // Bug fix: do NOT call checkGeofence here.
-            // checkGeofence is already called inside acceptLocation() which is triggered
-            // by every location callback update. Calling it again here with the same
-            // coordinates causes the outside/inside state machine to flip twice per tick,
-            // producing false alerts for users who are actually inside the polygon.
             sendToServer(lat.toString(), lng.toString(), batteryPercent, isLocationOn)
             return
         }
 
+        // FIX 6: When we have no recent valid location, only use lastLocation
+        // for server insertion (tracking). Do NOT run processAntiGlitchLocation
+        // or checkGeofence from this fallback path — that would trigger a
+        // second geofence evaluation per cycle with a potentially stale fix
+        // (especially dangerous when disconnected from WiFi).
         try {
             val lastKnown = fusedLocationClient.lastLocation
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 lastKnown.addOnSuccessListener { location ->
-                    if (location != null && isLocationValid(location)) {
-                        // processAntiGlitchLocation already calls acceptLocation -> checkGeofence
-                        processAntiGlitchLocation(location)
-                        val resolvedLat = lastLatitude
-                        val resolvedLng = lastLongitude
-                        if (resolvedLat != null && resolvedLng != null) {
-                            sendToServer(resolvedLat.toString(), resolvedLng.toString(), batteryPercent, isLocationOn)
-                        }
+                    if (location != null && isLocationFresh(location)) {
+                        sendToServer(location.latitude.toString(), location.longitude.toString(), batteryPercent, isLocationOn)
                     }
                     if (continuation.isActive) continuation.resume(Unit)
                 }
