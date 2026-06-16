@@ -15,8 +15,8 @@ android {
         applicationId = "com.example.arkfence"
         minSdk = 24
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 7
+        versionName = "1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
